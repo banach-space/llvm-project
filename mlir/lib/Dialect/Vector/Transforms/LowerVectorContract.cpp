@@ -425,6 +425,7 @@ struct UnrolledOuterProductGenerator
   }
 
   FailureOr<Value> outerProd(Value lhs, Value rhs, Value res, int reductionSize,
+                             bool isRedSizeScalable,
                              std::optional<Value> maybeMask = std::nullopt) {
     assert(reductionSize > 0);
     // Incremental support for masking.
@@ -432,25 +433,45 @@ struct UnrolledOuterProductGenerator
       return failure();
 
     Type resElementType = cast<VectorType>(res.getType()).getElementType();
-    for (int64_t k = 0; k < reductionSize; ++k) {
-      Value extractA = rewriter.create<vector::ExtractOp>(loc, lhs, k);
-      Value extractB = rewriter.create<vector::ExtractOp>(loc, rhs, k);
-      extractA = promote(extractA, resElementType);
-      extractB = promote(extractB, resElementType);
-      Value extractMask;
-      if (maybeMask.has_value() && maybeMask.value())
-        extractMask =
-            rewriter.create<vector::ExtractOp>(loc, maybeMask.value(), k);
+    auto step = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+    auto vscale =
+        rewriter.create<vector::VectorScaleOp>(loc, rewriter.getIndexType());
+    auto redSizeVal = rewriter.create<arith::ConstantIndexOp>(loc, reductionSize);
+    Value upperBound;
+    if (isRedSizeScalable)
+        upperBound = rewriter.create<arith::MulIOp>(loc, vscale, redSizeVal);
+    else
+        upperBound = redSizeVal;
 
-      Operation *outerProdOp = rewriter.create<vector::OuterProductOp>(
-          loc, res.getType(), extractA, extractB, res, kind);
-      res = maskOperation(rewriter, outerProdOp, extractMask)->getResult(0);
-    }
-    return res;
+    auto lowerBound = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    auto forOp =
+        rewriter.create<scf::ForOp>(loc, lowerBound, upperBound, step, res);
+    rewriter.setInsertionPointToStart(forOp.getBody());
+
+    Value extractA =
+        rewriter.create<vector::ExtractOp>(loc, lhs, forOp.getInductionVar());
+    Value extractB =
+        rewriter.create<vector::ExtractOp>(loc, rhs, forOp.getInductionVar());
+    extractA = promote(extractA, resElementType);
+    extractB = promote(extractB, resElementType);
+    Value extractMask;
+    if (maybeMask.has_value() && maybeMask.value())
+      extractMask = rewriter.create<vector::ExtractOp>(loc, maybeMask.value(),
+                                                       forOp.getInductionVar());
+
+    Operation *outerProdOp = rewriter.create<vector::OuterProductOp>(
+        loc, res.getType(), extractA, extractB, forOp.getRegionIterArg(0), kind);
+    res = maskOperation(rewriter, outerProdOp, extractMask)->getResult(0);
+    rewriter.create<scf::YieldOp>(loc, res);
+    res = forOp.getResult(0);
+
+    return forOp.getResult(0);
   }
 
   /// Two outer parallel, one inner reduction (matmat flavor).
   FailureOr<Value> matmat() {
+    auto lhsScalableDims = lhsType.getScalableDims();
+
     if (!iters({Par(), Par(), Red()}))
       return failure();
     // Set up the parallel/reduction structure in the right form.
@@ -459,33 +480,39 @@ struct UnrolledOuterProductGenerator
     Value transposedMask = t(mask, {2, 0, 1});
     // Classical row-major matmul:  Just permute the lhs.
     if (layout({{m, k}, {k, n}, {m, n}}))
-      return outerProd(t(lhs), rhs, res, lhsType.getDimSize(1), transposedMask);
+      return outerProd(t(lhs), rhs, res, lhsType.getDimSize(1),
+                       lhsScalableDims[1], transposedMask);
     // TODO: may be better to fail and use some vector<k> -> scalar reduction.
     if (layout({{m, k}, {n, k}, {m, n}})) {
       Value tlhs = t(lhs);
       return outerProd(tlhs, t(rhs), res, lhsType.getDimSize(1),
-                       transposedMask);
+                       lhsScalableDims[1], transposedMask);
     }
     // No need to permute anything.
     if (layout({{k, m}, {k, n}, {m, n}}))
-      return outerProd(lhs, rhs, res, lhsType.getDimSize(0), transposedMask);
+      return outerProd(lhs, rhs, res, lhsType.getDimSize(0), lhsScalableDims[0],
+                       transposedMask);
     // Just permute the rhs.
     if (layout({{k, m}, {n, k}, {m, n}}))
-      return outerProd(lhs, t(rhs), res, lhsType.getDimSize(0), transposedMask);
+      return outerProd(lhs, t(rhs), res, lhsType.getDimSize(0),
+                       lhsScalableDims[0], transposedMask);
     // Transposed output: swap RHS and LHS.
     // Classical row-major matmul: permute the lhs.
     if (layout({{m, k}, {k, n}, {n, m}}))
-      return outerProd(rhs, t(lhs), res, lhsType.getDimSize(1), transposedMask);
+      return outerProd(rhs, t(lhs), res, lhsType.getDimSize(1),
+                       lhsScalableDims[1], transposedMask);
     // TODO: may be better to fail and use some vector<k> -> scalar reduction.
     if (layout({{m, k}, {n, k}, {n, m}})) {
       Value trhs = t(rhs);
       return outerProd(trhs, t(lhs), res, lhsType.getDimSize(1),
-                       transposedMask);
+                       lhsScalableDims[1], transposedMask);
     }
     if (layout({{k, m}, {k, n}, {n, m}}))
-      return outerProd(rhs, lhs, res, lhsType.getDimSize(0), transposedMask);
+      return outerProd(rhs, lhs, res, lhsType.getDimSize(0), lhsScalableDims[0],
+                       transposedMask);
     if (layout({{k, m}, {n, k}, {n, m}}))
-      return outerProd(t(rhs), lhs, res, lhsType.getDimSize(0), transposedMask);
+      return outerProd(t(rhs), lhs, res, lhsType.getDimSize(0),
+                       lhsScalableDims[0], transposedMask);
     return failure();
   }
 
@@ -495,6 +522,7 @@ struct UnrolledOuterProductGenerator
   // outermost as required by outerproduct.
   //
   FailureOr<Value> matvec() {
+    auto lhsScalableDims = lhsType.getScalableDims();
     if (!iters({Par(), Red()}))
       return failure();
     AffineExpr m, k;
@@ -503,16 +531,16 @@ struct UnrolledOuterProductGenerator
 
     // Case mat-vec: transpose.
     if (layout({{m, k}, {k}, {m}}))
-      return outerProd(t(lhs), rhs, res, lhsType.getDimSize(1), transposedMask);
+      return outerProd(t(lhs), rhs, res, lhsType.getDimSize(1), lhsScalableDims[1], transposedMask);
     // Case mat-trans-vec: ready to go.
     if (layout({{k, m}, {k}, {m}}))
-      return outerProd(lhs, rhs, res, lhsType.getDimSize(0), transposedMask);
+      return outerProd(lhs, rhs, res, lhsType.getDimSize(0), lhsScalableDims[0], transposedMask);
     // Case vec-mat: swap and transpose.
     if (layout({{k}, {m, k}, {m}}))
-      return outerProd(t(rhs), lhs, res, lhsType.getDimSize(0), transposedMask);
+      return outerProd(t(rhs), lhs, res, lhsType.getDimSize(0), lhsScalableDims[0], transposedMask);
     // Case vec-mat-trans: swap and ready to go.
     if (layout({{k}, {k, m}, {m}}))
-      return outerProd(rhs, lhs, res, lhsType.getDimSize(0), transposedMask);
+      return outerProd(rhs, lhs, res, lhsType.getDimSize(0), lhsScalableDims[0], transposedMask);
     return failure();
   }
 
@@ -521,6 +549,7 @@ struct UnrolledOuterProductGenerator
   // Mask already has the shape of the outer product.
   //
   FailureOr<Value> tmatvec() {
+    auto lhsScalableDims = lhsType.getScalableDims();
     if (!iters({Red(), Par()}))
       return failure();
     AffineExpr k, m;
@@ -528,16 +557,16 @@ struct UnrolledOuterProductGenerator
 
     // Case mat-vec: transpose.
     if (layout({{m, k}, {k}, {m}}))
-      return outerProd(t(lhs), rhs, res, lhsType.getDimSize(1), mask);
+      return outerProd(t(lhs), rhs, res, lhsType.getDimSize(1), lhsScalableDims[1], mask);
     // Case mat-trans-vec: ready to go.
     if (layout({{k, m}, {k}, {m}}))
-      return outerProd(lhs, rhs, res, lhsType.getDimSize(0), mask);
+      return outerProd(lhs, rhs, res, lhsType.getDimSize(0), lhsScalableDims[0], mask);
     // Case vec-mat: swap and transpose.
     if (layout({{k}, {m, k}, {m}}))
-      return outerProd(t(rhs), lhs, res, lhsType.getDimSize(0), mask);
+      return outerProd(t(rhs), lhs, res, lhsType.getDimSize(0), lhsScalableDims[0], mask);
     // Case vec-mat-trans: swap and ready to go.
     if (layout({{k}, {k, m}, {m}}))
-      return outerProd(rhs, lhs, res, lhsType.getDimSize(0), mask);
+      return outerProd(rhs, lhs, res, lhsType.getDimSize(0), lhsScalableDims[0], mask);
     return failure();
   }
 

@@ -31,19 +31,24 @@
 }
 
 // CHECK-LABEL:   func.func @masked_extract_contract2(
-// CHECK-SAME:                                      %[[VAL_0:.*]]: vector<2x3xf32>,
-// CHECK-SAME:                                      %[[VAL_1:.*]]: vector<3xf32>,
-// CHECK-SAME:                                      %[[VAL_2:.*]]: vector<2xf32>,
-// CHECK-SAME:                                      %[[IN_MASK:.*]]: vector<2x3xi1>) -> vector<2xf32>
-// CHECK:           %[[T_MASK:.*]] = vector.transpose %[[IN_MASK]], [1, 0] : vector<2x3xi1> to vector<3x2xi1>
-// CHECK:           %[[MASK0:.*]] = vector.extract %[[T_MASK]][0] : vector<2xi1> from vector<3x2xi1>
-// CHECK:           vector.mask %[[MASK0]] { vector.outerproduct
-
-// CHECK:           %[[MASK1:.*]] = vector.extract %[[T_MASK]][1] : vector<2xi1> from vector<3x2xi1>
-// CHECK:           vector.mask %[[MASK1]] { vector.outerproduct
-
-// CHECK:           %[[MASK2:.*]] = vector.extract %[[T_MASK]][2] : vector<2xi1> from vector<3x2xi1>
-// CHECK:           vector.mask %[[MASK2]] { vector.outerproduct
+// CHECK-SAME:                                        %[[VAL_0:.*]]: vector<2x3xf32>,
+// CHECK-SAME:                                        %[[VAL_1:.*]]: vector<3xf32>,
+// CHECK-SAME:                                        %[[VAL_2:.*]]: vector<2xf32>,
+// CHECK-SAME:                                        %[[VAL_3:.*]]: vector<2x3xi1>) -> vector<2xf32> {
+// CHECK:           %[[VAL_4:.*]] = arith.constant 1 : index
+// CHECK:           %[[VAL_5:.*]] = arith.constant 3 : index
+// CHECK:           %[[VAL_6:.*]] = arith.constant 0 : index
+// CHECK:           %[[VAL_7:.*]] = vector.transpose %[[VAL_3]], [1, 0] : vector<2x3xi1> to vector<3x2xi1>
+// CHECK:           %[[VAL_8:.*]] = vector.transpose %[[VAL_0]], [1, 0] : vector<2x3xf32> to vector<3x2xf32>
+// CHECK:           %[[VAL_9:.*]] = scf.for %[[VAL_10:.*]] = %[[VAL_6]] to %[[VAL_5]] step %[[VAL_4]] iter_args(%[[VAL_11:.*]] = %[[VAL_2]]) -> (vector<2xf32>) {
+// CHECK:             %[[VAL_12:.*]] = vector.extract %[[VAL_8]]{{\[}}%[[VAL_10]]] : vector<2xf32> from vector<3x2xf32>
+// CHECK:             %[[VAL_13:.*]] = vector.extract %[[VAL_1]]{{\[}}%[[VAL_10]]] : f32 from vector<3xf32>
+// CHECK:             %[[VAL_14:.*]] = vector.extract %[[VAL_7]]{{\[}}%[[VAL_10]]] : vector<2xi1> from vector<3x2xi1>
+// CHECK:             %[[VAL_15:.*]] = vector.mask %[[VAL_14]] { vector.outerproduct %[[VAL_12]], %[[VAL_13]], %[[VAL_11]] {kind = #[[?]]<add>} : vector<2xf32>, f32 } : vector<2xi1> -> vector<2xf32>
+// CHECK:             scf.yield %[[VAL_15]] : vector<2xf32>
+// CHECK:           }
+// CHECK:           return %[[VAL_9]] : vector<2xf32>
+// CHECK:         }
 
 func.func @masked_extract_contract2(%arg0: vector<2x3xf32>,
                                     %arg1: vector<3xf32>,
