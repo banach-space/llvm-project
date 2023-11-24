@@ -210,3 +210,169 @@ void mlir::linalg::hoistRedundantVectorTransfers(func::FuncOp func) {
     });
   }
 }
+
+void mlir::linalg::hoistRedundantVectorShapeCast(func::FuncOp func) {
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    // First move loop invariant ops outside of their loop. This needs to be
+    // done before as we cannot move ops without interrupting the function walk.
+    func.walk(
+        [&](LoopLikeOpInterface loopLike) { moveLoopInvariantCode(loopLike); });
+
+    func.walk([&](vector::ShapeCastOp shapeCast) {
+      // if (!isa<MemRefType>(transferRead.getShapedType()))
+      //   return WalkResult::advance();
+
+      LLVM_DEBUG(DBGS() << "Candidate for hoisting: "
+                        << *shapeCast.getOperation() << "\n");
+      auto loop = dyn_cast<LoopLikeOpInterface>(shapeCast->getParentOp());
+      LLVM_DEBUG(DBGS() << "Parent op: " << *shapeCast->getParentOp()
+                        << "\n");
+      if (!isa_and_nonnull<scf::ForOp, affine::AffineForOp>(loop))
+        return WalkResult::advance();
+
+      LLVM_DEBUG(DBGS() << "Candidate shape cast: " << *shapeCast.getOperation()
+                        << "\n");
+
+      SetVector<Operation *> forwardSlice;
+      getForwardSlice(shapeCast.getOperation(), &forwardSlice);
+      if (!shapeCast.getSource().getDefiningOp())
+      {
+        LLVM_DEBUG(DBGS() << "Confirmed candidate shape cast: "
+                          << *shapeCast.getOperation() << "\n");
+      }
+
+      auto candidateShape = dyn_cast<vector::ShapeCastOp>(loop.getYieldedValues()[0].getDefiningOp());
+      if (candidateShape)
+      {
+        LLVM_DEBUG(DBGS() << "Double confirmed candidate shape cast: "
+                          << *shapeCast.getOperation() << "\n");
+      }
+
+      if (candidateShape.getSource().getType() == shapeCast.getResult().getType())
+      {
+        LLVM_DEBUG(DBGS() << "Triple confirmed candidate shape cast: "
+                          << *shapeCast.getOperation() << "\n");
+      }
+      if (candidateShape.getResult().getType() == shapeCast.getSource().getType())
+      {
+        LLVM_DEBUG(DBGS() << "Quadruple confirmed candidate shape cast: "
+                          << *shapeCast.getOperation() << "\n");
+      }
+
+      auto initDefOp = loop.getTiedLoopInit(loop.getRegionIterArgs()[0])->get();
+      loop.getLoopRegions()[0]->getBlocks();
+
+      return WalkResult::advance();
+
+      // // Look for the last TransferWriteOp in the forwardSlice of
+      // // `transferRead` that operates on the same memref.
+      // vector::TransferWriteOp transferWrite;
+      // for (auto *sliceOp : llvm::reverse(forwardSlice)) {
+      //   auto candidateWrite = dyn_cast<vector::TransferWriteOp>(sliceOp);
+      //   if (!candidateWrite ||
+      //       candidateWrite.getSource() != transferRead.getSource())
+      //     continue;
+      //   transferWrite = candidateWrite;
+      // }
+
+      // // All operands of the TransferRead must be defined outside of the loop.
+      // for (auto operand : transferRead.getOperands())
+      //   if (!loop.isDefinedOutsideOfLoop(operand))
+      //     return WalkResult::advance();
+
+      // // Only hoist transfer_read / transfer_write pairs and singleton
+      // // transfer_reads for now.
+      // if (!transferWrite) {
+      //   // Make sure there are no other accesses to the memref before
+      //   // hoisting transfer_read.
+      //   if (noAliasingUseInLoop(transferRead, loop))
+      //     loop.moveOutOfLoop(transferRead);
+      //   return WalkResult::advance();
+      // }
+
+      // LLVM_DEBUG(DBGS() << "Candidate: " << *transferWrite.getOperation()
+      //                   << "\n");
+
+      // // Approximate aliasing by checking that:
+      // //   1. indices, vector type and permutation map are the same (i.e., the
+      // //      transfer_read/transfer_write ops are matching),
+      // //   2. source operands for transfer.{read|write} do not originate from
+      // //      Ops implementing ViewLikeOpInterface.
+      // //   3. no other operations in the loop access the same memref except
+      // //      for transfer_read/transfer_write accessing statically disjoint
+      // //      slices.
+      // if (transferRead.getIndices() != transferWrite.getIndices() ||
+      //     transferRead.getVectorType() != transferWrite.getVectorType() ||
+      //     transferRead.getPermutationMap() != transferWrite.getPermutationMap())
+      //   return WalkResult::advance();
+
+      // auto *source = transferRead.getSource().getDefiningOp();
+      // if (source && isa_and_nonnull<ViewLikeOpInterface>(source))
+      //   return WalkResult::advance();
+
+      // source = transferWrite.getSource().getDefiningOp();
+      // if (source && isa_and_nonnull<ViewLikeOpInterface>(source))
+      //   return WalkResult::advance();
+
+      // // TODO: may want to memoize this information for performance but it
+      // // likely gets invalidated often.
+      // DominanceInfo dom(loop);
+      // if (!dom.properlyDominates(transferRead.getOperation(), transferWrite))
+      //   return WalkResult::advance();
+      // for (auto &use : transferRead.getSource().getUses()) {
+      //   if (!loop->isAncestor(use.getOwner()))
+      //     continue;
+      //   if (use.getOwner() == transferRead.getOperation() ||
+      //       use.getOwner() == transferWrite.getOperation())
+      //     continue;
+      //   if (auto transferWriteUse =
+      //           dyn_cast<vector::TransferWriteOp>(use.getOwner())) {
+      //     if (!vector::isDisjointTransferSet(
+      //             cast<VectorTransferOpInterface>(*transferWrite),
+      //             cast<VectorTransferOpInterface>(*transferWriteUse),
+      //             /*testDynamicValueUsingBounds=*/true))
+      //       return WalkResult::advance();
+      //   } else if (auto transferReadUse =
+      //                  dyn_cast<vector::TransferReadOp>(use.getOwner())) {
+      //     if (!vector::isDisjointTransferSet(
+      //             cast<VectorTransferOpInterface>(*transferWrite),
+      //             cast<VectorTransferOpInterface>(*transferReadUse),
+      //             /*testDynamicValueUsingBounds=*/true))
+      //       return WalkResult::advance();
+      //   } else {
+      //     // Unknown use, we cannot prove that it doesn't alias with the
+      //     // transferRead/transferWrite operations.
+      //     return WalkResult::advance();
+      //   }
+      // }
+
+      // // Hoist read before.
+      // loop.moveOutOfLoop(transferRead);
+
+      // // Hoist write after.
+      // transferWrite->moveAfter(loop);
+
+      // // Rewrite `loop` with new yields by cloning and erase the original loop.
+      // IRRewriter rewriter(transferRead.getContext());
+      // NewYieldValuesFn yieldFn = [&](OpBuilder &b, Location loc,
+      //                                ArrayRef<BlockArgument> newBBArgs) {
+      //   return SmallVector<Value>{transferWrite.getVector()};
+      // };
+
+      // auto maybeNewLoop = loop.replaceWithAdditionalYields(
+      //     rewriter, transferRead.getVector(),
+      //     /*replaceInitOperandUsesInLoop=*/true, yieldFn);
+      // if (failed(maybeNewLoop))
+      //   return WalkResult::interrupt();
+
+      // transferWrite.getVectorMutable().assign(
+      //     maybeNewLoop->getOperation()->getResults().back());
+      // changed = true;
+      // // Need to interrupt and restart because erasing the loop messes up
+      // // the walk.
+      // return WalkResult::interrupt();
+    });
+  }
+}

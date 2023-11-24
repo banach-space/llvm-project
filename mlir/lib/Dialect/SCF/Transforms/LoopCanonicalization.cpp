@@ -15,6 +15,7 @@
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/Patterns.h"
 #include "mlir/Dialect/SCF/Utils/AffineCanonicalizationUtils.h"
@@ -30,6 +31,11 @@ namespace mlir {
 
 using namespace mlir;
 using namespace mlir::scf;
+
+using llvm::dbgs;
+#define DEBUG_TYPE "loop-canon"
+
+#define DBGS() (dbgs() << '[' << DEBUG_TYPE << "] ")
 
 /// A simple, conservative analysis to determine if the loop is shape
 /// conserving. I.e., the type of the arg-th yielded value is the same as the
@@ -148,6 +154,86 @@ struct DimOfLoopResultFolder : public OpRewritePattern<OpTy> {
   }
 };
 
+struct hoistRedundantVectorShapeCast : public OpRewritePattern<vector::ShapeCastOp> {
+  using OpRewritePattern<vector::ShapeCastOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(vector::ShapeCastOp shapeCastOp,
+                                PatternRewriter &rewriter) const override {
+      LLVM_DEBUG(DBGS() << "Candidate for hoisting: "
+                        << *shapeCastOp.getOperation() << "\n");
+      auto loop = dyn_cast<LoopLikeOpInterface>(shapeCastOp->getParentOp());
+      LLVM_DEBUG(DBGS() << "Parent op: " << *shapeCastOp->getParentOp()
+                        << "\n");
+      if (!isa_and_nonnull<scf::ForOp, affine::AffineForOp>(loop))
+        return failure();
+
+      if (loop.getYieldedValues().size() > 1)
+        return failure();
+
+      LLVM_DEBUG(DBGS() << "Candidate shape cast: " << *shapeCastOp.getOperation()
+                        << "\n");
+
+      SetVector<Operation *> forwardSlice;
+      if (!shapeCastOp.getSource().getDefiningOp())
+      {
+        LLVM_DEBUG(DBGS() << "Confirmed candidate shape cast: "
+                          << *shapeCastOp.getOperation() << "\n");
+      }
+
+      auto candidateShape = dyn_cast<vector::ShapeCastOp>(
+          loop.getYieldedValues()[0].getDefiningOp());
+      if (candidateShape)
+      {
+        LLVM_DEBUG(DBGS() << "Double confirmed candidate shape cast: "
+                          << *shapeCastOp.getOperation() << "\n");
+      } else return failure();
+
+      if (candidateShape.getSource().getType() ==
+          shapeCastOp.getResult().getType()) {
+        LLVM_DEBUG(DBGS() << "Triple confirmed candidate shape cast: "
+                          << *shapeCastOp.getOperation() << "\n");
+      }
+      if (candidateShape.getResult().getType() ==
+          shapeCastOp.getSource().getType()) {
+        LLVM_DEBUG(DBGS() << "Quadruple confirmed candidate shape cast: "
+                          << *shapeCastOp.getOperation() << "\n");
+      } else return failure();
+
+      auto initDefOp = loop.getTiedLoopInit(loop.getRegionIterArgs()[0])->get();
+      loop.getLoopRegions()[0]->getBlocks();
+
+      auto blockArg = dyn_cast<BlockArgument>(shapeCastOp.getSource());
+      if (!blockArg)
+        return failure();
+      auto forOp = dyn_cast<ForOp>(blockArg.getParentBlock()->getParentOp());
+      Value initArg = forOp.getTiedLoopInit(blockArg)->get();
+      auto yieldVal = loop.getYieldedValues()[0];
+
+      auto oldIP = rewriter.saveInsertionPoint();
+      rewriter.setInsertionPoint(loop->getParentOp());
+      auto newType = shapeCastOp.getResult().getType();
+      auto newInit = rewriter.create<arith::ConstantOp>(
+          shapeCastOp.getLoc(), newType, rewriter.getZeroAttr(newType));
+
+      rewriter.restoreInsertionPoint(oldIP);
+      auto newShapeCast = rewriter.create<vector::ShapeCastOp>(
+          shapeCastOp.getLoc(), newType, yieldVal);
+      // initArg.replaceAllUsesWith(newInit);
+      initArg.dump();
+      NewYieldValuesFn yieldFn = [&](OpBuilder &b, Location loc,
+                                     ArrayRef<BlockArgument> newBBArgs) {
+        return SmallVector<Value>{newShapeCast.getResult()};
+      };
+
+      auto maybeNewLoop = loop.replaceWithAdditionalYields(
+          rewriter, newInit.getResult(),
+          /*replaceInitOperandUsesInLoop=*/true, yieldFn);
+      if (!failed(maybeNewLoop))
+        maybeNewLoop->getOperation()->getParentOp()->dump();
+
+    return success();
+  }
+};
+
 /// Canonicalize AffineMinOp/AffineMaxOp operations in the context of scf.for
 /// and scf.parallel loops with a known range.
 template <typename OpTy>
@@ -181,6 +267,7 @@ void mlir::scf::populateSCFForLoopCanonicalizationPatterns(
            AffineOpSCFCanonicalizationPattern<affine::AffineMaxOp>,
            DimOfIterArgFolder<tensor::DimOp>, DimOfIterArgFolder<memref::DimOp>,
            DimOfLoopResultFolder<tensor::DimOp>,
+           hoistRedundantVectorShapeCast,
            DimOfLoopResultFolder<memref::DimOp>>(ctx);
 }
 

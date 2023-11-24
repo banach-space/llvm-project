@@ -44,6 +44,7 @@ namespace linalg {
 /// WARNING: This hoisting does not model parallelism and is generally incorrect
 /// when used on distributed loops with memref semantics!
 void hoistRedundantVectorTransfers(func::FuncOp func);
+void hoistRedundantVectorShapeCast(func::FuncOp func);
 
 } // namespace linalg
 } // namespace mlir

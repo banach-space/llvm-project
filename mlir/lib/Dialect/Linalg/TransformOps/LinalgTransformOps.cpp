@@ -3123,6 +3123,7 @@ transform::HoistRedundantVectorTransfersOp::applyToOne(
   // incorrect when used on distributed loops with memref semantics!
   // TODO: obsolete and should be retired.
   linalg::hoistRedundantVectorTransfers(target);
+  linalg::hoistRedundantVectorShapeCast(target);
   results.push_back(target);
   return DiagnosedSilenceableFailure::success();
 }
