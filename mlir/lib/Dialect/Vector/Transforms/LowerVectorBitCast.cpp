@@ -57,7 +57,7 @@ public:
 
     auto unrollRank = unrollIterator->getRank();
     ArrayRef<int64_t> shape = resultType.getShape().drop_front(unrollRank);
-    ArrayRef<bool> scalableDims =
+    ArrayRef<int64_t> scalableDims =
         resultType.getScalableDims().drop_front(unrollRank);
     auto bitcastResType =
         VectorType::get(shape, resultType.getElementType(), scalableDims);

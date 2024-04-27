@@ -81,10 +81,29 @@ func.func @constant_invalid_scalable_1d_vec_initialization() {
 
 // -----
 
+//-----------------------------------------------------------------------------
+// NOTE: This is currently rejected much earlier on - scalable vectors (i.e.
+// "dynamic" shapes) are only allowed when creating a splat.
+//-----------------------------------------------------------------------------
+
 func.func @constant_invalid_scalable_2d_vec_initialization() {
 ^bb0:
-  // expected-error@+1 {{'arith.constant' op intializing scalable vectors with elements attribute is not supported unless it's a vector splat}}
+  // expected-error@+1 {{inferred shape of elements literal ([2, 2]) does not match newType ([2, -9223372036854775808])}}
   %c = arith.constant dense<[[3, 3], [1, 1]]> : vector<2 x [2] x i32>
+  return
+}
+
+// -----
+
+//-----------------------------------------------------------------------------
+// NEW-SV: Splats are not allowed for dynamic shapes, unless dealing with
+// vectors (scalable vectors are dynamic shapes).
+//-----------------------------------------------------------------------------
+
+func.func @constant_invalid_dynamic_tensor_initialization() {
+^bb0:
+  // expected-error@+2 {{elements literal type must have static shape}}
+  %c = arith.constant dense<[1]> : tensor<? x i32>
   return
 }
 

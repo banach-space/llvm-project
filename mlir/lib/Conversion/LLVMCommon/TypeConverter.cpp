@@ -588,7 +588,11 @@ FailureOr<Type> LLVMTypeConverter::convertVectorType(VectorType type) const {
   // For n-D vector types for which a _non-trailing_ dim is scalable,
   // return a failure. Supporting such cases would require LLVM
   // to support something akin "scalable arrays" of vectors.
-  if (llvm::is_contained(type.getScalableDims().drop_back(), true))
+  // ----------------------------------------------------------------------
+  // TODO: With the new representation, we can check `shape` rather than
+  // `scalableDims`
+  // ----------------------------------------------------------------------
+  if (llvm::is_contained(type.getShape().drop_back(), ShapedType::kDynamic))
     return failure();
   auto shape = type.getShape();
   for (int i = shape.size() - 2; i >= 0; --i)

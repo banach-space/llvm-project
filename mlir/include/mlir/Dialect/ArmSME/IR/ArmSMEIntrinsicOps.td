@@ -165,7 +165,10 @@ class LLVM_aarch64_sme_write<string direction>
                     /*immArgPositions=*/[0],
                     /*immArgAttrNames=*/["tile_id"],
                     /*overloadedOperands=*/[3],
-                    [AllShapesMatch<["predicate", "vector"]>]>,
+                    [
+                      AllScalableShapesMatch<["predicate", "vector"]>,
+                      AllShapesMatch<["predicate", "vector"]>
+                    ]>,
       Arguments<(ins Arg<I32Attr, "Virtual tile ID">:$tile_id,
                      Arg<I32, "Tile slice">:$tile_slice_index,
                      Arg<SVEPredicate, "Vector predicate">:$predicate,
@@ -177,8 +180,11 @@ class LLVM_aarch64_sme_read<string direction>
                     /*immArgPositions=*/[2],
                     /*immArgAttrNames=*/["tile_id"],
                     /*overloadedOperands=*/[],
-                    [AllShapesMatch<["vector", "predicate", "res"]>,
-                     AllElementTypesMatch<["vector", "res"]>],
+                    [
+                      AllScalableShapesMatch<["vector", "predicate", "res"]>,
+                      AllShapesMatch<["predicate", "vector"]>,
+                      AllElementTypesMatch<["vector", "res"]>
+                    ],
                     /*numResults=*/1, /*overloadedResults=*/[0]>,
       Arguments<(ins Arg<SVEVector, "Vector operand">:$vector,
                      Arg<SVEPredicate, "Vector predicate">:$predicate,

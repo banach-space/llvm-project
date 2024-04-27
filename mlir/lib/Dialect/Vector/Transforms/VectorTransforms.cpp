@@ -1248,7 +1248,8 @@ getTransferFoldableInnerUnitDims(MemRefType srcType, VectorType vectorType) {
     return failure();
 
   auto isUnitDim = [](VectorType type, int dim) {
-    return type.getDimSize(dim) == 1 && !type.getScalableDims()[dim];
+    return type.getBaseDimSize(dim) == 1 &&
+           type.getScalableDims()[dim] == ShapedType::kDynamic;
   };
 
   // According to vector.transfer_read/write semantics, the vector can be a
@@ -1632,25 +1633,24 @@ struct ChainedReduction final : OpRewritePattern<vector::ReductionOp> {
 static VectorType dropNonScalableUnitDimFromType(VectorType inVecTy) {
   auto inVecShape = inVecTy.getShape();
   SmallVector<int64_t> newShape;
-  SmallVector<bool> newScalableDims;
-  for (auto [dim, isScalable] :
-       llvm::zip_equal(inVecShape, inVecTy.getScalableDims())) {
-    if (dim == 1 && !isScalable)
+  SmallVector<int64_t> newScalableDims;
+  for (auto [idx, dim] : llvm::enumerate(inVecShape)) {
+    if (dim == 1)
       continue;
 
     newShape.push_back(dim);
-    newScalableDims.push_back(isScalable);
+    newScalableDims.push_back(inVecTy.getScalableDims()[idx]);
   }
   // All dims have been dropped, return vector<1xeType>.
   if (newShape.empty()) {
     newShape.push_back(1);
-    newScalableDims.push_back(false);
+    newScalableDims.push_back(ShapedType::kDynamic);
   }
 
   return VectorType::get(newShape, inVecTy.getElementType(), newScalableDims);
 }
 
-/// For vectors with at least one unit dim, replaces:
+/// For vectors with at least ane unit dim, replaces:
 ///   elementwise(a, b)
 /// with:
 ///   sc_a = shape_cast(a)
@@ -1761,7 +1761,7 @@ struct DropUnitDimsFromTransposeOp final
     int64_t droppedDims = 0;
     for (auto [i, dim] : llvm::enumerate(sourceDims)) {
       droppedDimsBefore[i] = droppedDims;
-      if (dim == std::make_tuple(1, false))
+      if (dim == std::make_tuple(1, ShapedType::kDynamic))
         ++droppedDims;
     }
 
@@ -1769,7 +1769,7 @@ struct DropUnitDimsFromTransposeOp final
     ArrayRef<int64_t> perm = op.getPermutation();
     SmallVector<int64_t> newPerm;
     for (int64_t idx : perm) {
-      if (sourceDims[idx] == std::make_tuple(1, false))
+      if (sourceDims[idx] == std::make_tuple(1, ShapedType::kDynamic))
         continue;
       newPerm.push_back(idx - droppedDimsBefore[idx]);
     }

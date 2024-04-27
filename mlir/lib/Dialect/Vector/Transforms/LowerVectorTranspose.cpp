@@ -435,12 +435,14 @@ public:
 
     // Set up convenience transposition table.
     ArrayRef<int64_t> transp = op.getPermutation();
+    ArrayRef<int64_t> scalableDims = resType.getScalableDims();
 
+    auto resBaseShape = resType.getBaseShape();
     if (resType.getRank() == 2 &&
-        ((resType.getShape().front() == 1 &&
-          !resType.getScalableDims().front()) ||
-         (resType.getShape().back() == 1 &&
-          !resType.getScalableDims().back())) &&
+        ((resBaseShape.front() == 1 &&
+          scalableDims.front() == ShapedType::kDynamic) ||
+         (resBaseShape.back() == 1 &&
+          scalableDims.back() == ShapedType::kDynamic)) &&
         transp == ArrayRef<int64_t>({1, 0})) {
       rewriter.replaceOpWithNewOp<vector::ShapeCastOp>(op, resType, input);
       return success();

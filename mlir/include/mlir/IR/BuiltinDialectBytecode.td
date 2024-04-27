@@ -283,7 +283,7 @@ def VectorType : DialectType<(type
 }
 
 def VectorTypeWithScalableDims : DialectType<(type
-  Array<BoolList>:$scalableDims,
+  Array<SignedVarIntList>:$scalableDims,
   Array<SignedVarIntList>:$shape,
   Type:$elementType
 )> {

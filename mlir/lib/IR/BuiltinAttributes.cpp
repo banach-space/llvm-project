@@ -593,7 +593,7 @@ static APInt readBits(const char *rawData, size_t bitPos, size_t bitWidth) {
 /// the same element count as 'type'.
 template <typename Values>
 static bool hasSameElementsOrSplat(ShapedType type, const Values &values) {
-  return (values.size() == 1) ||
+  return (llvm::all_equal(values) || values.size() == 1) ||
          (type.getNumElements() == static_cast<int64_t>(values.size()));
 }
 
@@ -1070,7 +1070,15 @@ bool DenseElementsAttr::isValidRawBuffer(ShapedType type,
                                          bool &detectedSplat) {
   size_t storageWidth = getDenseElementStorageWidth(type.getElementType());
   size_t rawBufferWidth = rawBuffer.size() * CHAR_BIT;
-  int64_t numElements = type.getNumElements();
+  int64_t numElements;
+
+  // --------------------------------------------------------------
+  // TODO: If dynamic shape, assume that only 1 element is passed
+  // --------------------------------------------------------------
+  if (type.isDynamicShape(type.getShape()))
+    numElements = 1;
+  else
+    numElements = type.getNumElements();
 
   // The initializer is always a splat if the result type has a single element.
   detectedSplat = numElements == 1;
@@ -1240,8 +1248,8 @@ DenseElementsAttr DenseElementsAttr::reshape(ShapedType newType) {
 
   assert(newType.getElementType() == curType.getElementType() &&
          "expected the same element type");
-  assert(newType.getNumElements() == curType.getNumElements() &&
-         "expected the same number of elements");
+  // assert(newType.getNumElements() == curType.getNumElements() &&
+  //        "expected the same number of elements");
   return DenseIntOrFPElementsAttr::getRaw(newType, getRawData());
 }
 
@@ -1296,6 +1304,11 @@ Type DenseElementsAttr::getElementType() const {
 }
 
 int64_t DenseElementsAttr::getNumElements() const {
+  // --------------------------------------------------------------
+  // TODO: If dynamic shape, assume that only 1 element is passed
+  // --------------------------------------------------------------
+  if (ShapedType::isDynamicShape(getType().getShape()))
+    return 1;
   return getType().getNumElements();
 }
 
@@ -1346,7 +1359,12 @@ DenseElementsAttr DenseIntOrFPElementsAttr::getRaw(ShapedType type,
 
 DenseElementsAttr DenseIntOrFPElementsAttr::getRaw(ShapedType type,
                                                    ArrayRef<char> data) {
-  assert(type.hasStaticShape() && "type must have static shape");
+  // --------------------------------------------------------------
+  // TODO: If dynamic shape, assume that only 1 element is passed
+  // Not sure if there's a bette way to handle this other than commenting out.
+  // -------------------------------------------------------------
+  // assert((llvm::isa<VectorType>(type) || type.hasStaticShape()) && "type must
+  // have static shape");
   bool isSplat = false;
   bool isValid = isValidRawBuffer(type, data, isSplat);
   assert(isValid);

@@ -56,7 +56,9 @@ static bool isInvariantArg(BlockArgument arg, Block *block) {
 
 /// Constructs vector type for element type.
 static VectorType vectorType(VL vl, Type etp) {
-  return VectorType::get(vl.vectorLength, etp, vl.enableVLAVectorization);
+  return vl.enableVLAVectorization
+             ? VectorType::get(ShapedType::kDynamic, etp, vl.vectorLength)
+             : VectorType::get(vl.vectorLength, etp, ShapedType::kDynamic);
 }
 
 /// Constructs vector type from a memref value.

@@ -108,8 +108,8 @@ static Value getIndexedPtrs(ConversionPatternRewriter &rewriter, Location loc,
   assert(vectorType.getRank() == 1 && "expected a 1-d vector type");
   auto pType = MemRefDescriptor(llvmMemref).getElementPtrType();
   auto ptrsType =
-      LLVM::getVectorType(pType, vectorType.getDimSize(0),
-                          /*isScalable=*/vectorType.getScalableDims()[0]);
+      LLVM::getVectorType(pType, vectorType.getBaseDimSize(0),
+                          /*isScalable=*/vectorType.isScalableDim(0));
   return rewriter.create<LLVM::GEPOp>(
       loc, ptrsType, typeConverter.convertType(memRefType.getElementType()),
       base, index);
@@ -531,14 +531,14 @@ static Value getOrCreateAccumulator(ConversionPatternRewriter &rewriter,
 static Value createVectorLengthValue(ConversionPatternRewriter &rewriter,
                                      Location loc, Type llvmType) {
   VectorType vType = cast<VectorType>(llvmType);
-  auto vShape = vType.getShape();
+  auto vShape = vType.getBaseShape();
   assert(vShape.size() == 1 && "Unexpected multi-dim vector type");
 
   Value baseVecLength = rewriter.create<LLVM::ConstantOp>(
       loc, rewriter.getI32Type(),
       rewriter.getIntegerAttr(rewriter.getI32Type(), vShape[0]));
 
-  if (!vType.getScalableDims()[0])
+  if (!vType.isScalableDim(0))
     return baseVecLength;
 
   // For a scalable vector type, create and return `vScale * baseVecLength`.
@@ -1021,7 +1021,7 @@ public:
     }
 
     // For all other cases, insert the individual values individually.
-    int64_t v1Dim = v1Type.getDimSize(0);
+    int64_t v1Dim = v1Type.getBaseDimSize(0);
     Type eltType;
     if (auto arrayType = dyn_cast<LLVM::LLVMArrayType>(llvmType))
       eltType = arrayType.getElementType();
@@ -1344,7 +1344,7 @@ public:
     Value zero = rewriter.create<arith::ConstantOp>(
         loc, elemType, rewriter.getZeroAttr(elemType));
     Value desc = rewriter.create<vector::SplatOp>(loc, vType, zero);
-    for (int64_t i = 0, e = vType.getShape().front(); i != e; ++i) {
+    for (int64_t i = 0, e = vType.getBaseDimSize(0); i != e; ++i) {
       Value extrLHS = rewriter.create<ExtractOp>(loc, op.getLhs(), i);
       Value extrRHS = rewriter.create<ExtractOp>(loc, op.getRhs(), i);
       Value extrACC = rewriter.create<ExtractOp>(loc, op.getAcc(), i);
@@ -1480,7 +1480,7 @@ public:
         force32BitVectorIndices ? rewriter.getI32Type() : rewriter.getI64Type();
     auto loc = op->getLoc();
     Value indices = rewriter.create<LLVM::StepVectorOp>(
-        loc, LLVM::getVectorType(idxType, dstType.getShape()[0],
+        loc, LLVM::getVectorType(idxType, dstType.getBaseDimSize(0),
                                  /*isScalable=*/true));
     auto bound = getValueOrCreateCastToIndexLike(rewriter, loc, idxType,
                                                  op.getOperand(0));
@@ -1678,7 +1678,7 @@ struct VectorSplatOpLowering : public ConvertOpToLLVMPattern<vector::SplatOp> {
     auto v = rewriter.create<LLVM::InsertElementOp>(
         splatOp.getLoc(), vectorType, undef, adaptor.getInput(), zero);
 
-    int64_t width = cast<VectorType>(splatOp.getType()).getDimSize(0);
+    int64_t width = cast<VectorType>(splatOp.getType()).getBaseDimSize(0);
     SmallVector<int32_t> zeroValues(width, 0);
 
     // Shuffle the value across the desired number of elements.
@@ -1723,7 +1723,7 @@ struct VectorSplatNdOpLowering : public ConvertOpToLLVMPattern<SplatOp> {
                                                      adaptor.getInput(), zero);
 
     // Shuffle the value across the desired number of elements.
-    int64_t width = resultType.getDimSize(resultType.getRank() - 1);
+    int64_t width = resultType.getBaseDimSize(resultType.getRank() - 1);
     SmallVector<int32_t> zeroValues(width, 0);
     v = rewriter.create<LLVM::ShuffleVectorOp>(loc, v, v, zeroValues);
 

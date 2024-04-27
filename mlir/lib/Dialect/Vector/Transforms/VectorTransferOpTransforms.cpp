@@ -314,9 +314,9 @@ static int getReducedRank(ArrayRef<int64_t> shape) {
 /// type.
 static VectorType trimNonScalableUnitDims(VectorType oldType) {
   SmallVector<int64_t> newShape;
-  SmallVector<bool> newScalableDims;
+  SmallVector<int64_t> newScalableDims;
   for (auto [dimIdx, dimSize] : llvm::enumerate(oldType.getShape())) {
-    if (dimSize == 1 && !oldType.getScalableDims()[dimIdx])
+    if (dimSize == 1 && !oldType.isScalableDim(dimIdx))
       continue;
     newShape.push_back(dimSize);
     newScalableDims.push_back(oldType.getScalableDims()[dimIdx]);
@@ -334,9 +334,10 @@ createMaskDropNonScalableUnitDims(PatternRewriter &rewriter, Location loc,
     return failure();
 
   SmallVector<Value> reducedOperands;
-  for (auto [dim, dimIsScalable, operand] : llvm::zip_equal(
-           type.getShape(), type.getScalableDims(), op.getOperands())) {
-    if (dim == 1 && !dimIsScalable) {
+  auto baseShape = type.getBaseShape();
+  for (auto [dim, scalableDim, operand] :
+       llvm::zip_equal(baseShape, type.getScalableDims(), op.getOperands())) {
+    if (dim == 1 && scalableDim == ShapedType::kDynamic) {
       // If the mask for the unit dim is not a constant of 1, do nothing.
       auto constant = operand.getDefiningOp<arith::ConstantIndexOp>();
       if (!constant || (constant.value() != 1))
@@ -598,8 +599,9 @@ public:
       return failure();
     if (!vectorType.getElementType().isSignlessIntOrFloat())
       return failure();
+    auto baseShape = vectorType.getBaseShape();
     unsigned trailingVectorDimBitwidth =
-        vectorType.getShape().back() * vectorType.getElementTypeBitWidth();
+        baseShape.back() * vectorType.getElementTypeBitWidth();
     if (trailingVectorDimBitwidth >= targetVectorBitwidth)
       return failure();
     if (!vector::isContiguousSlice(sourceType, vectorType))
@@ -690,8 +692,9 @@ public:
       return failure();
     if (!vectorType.getElementType().isSignlessIntOrFloat())
       return failure();
+    auto baseShape = vectorType.getBaseShape();
     unsigned trailingVectorDimBitwidth =
-        vectorType.getShape().back() * vectorType.getElementTypeBitWidth();
+        baseShape.back() * vectorType.getElementTypeBitWidth();
     if (trailingVectorDimBitwidth >= targetVectorBitwidth)
       return failure();
     if (!vector::isContiguousSlice(sourceType, vectorType))
@@ -893,7 +896,8 @@ class RewriteScalarWrite : public OpRewritePattern<vector::TransferWriteOp> {
                                 PatternRewriter &rewriter) const override {
     // Must be a scalar write.
     auto vecType = xferOp.getVectorType();
-    if (!llvm::all_of(vecType.getShape(), [](int64_t sz) { return sz == 1; }))
+    auto baseShape = vecType.getBaseShape();
+    if (!llvm::all_of(baseShape, [](int64_t sz) { return sz == 1; }))
       return failure();
     // Mask not supported.
     if (xferOp.getMask())

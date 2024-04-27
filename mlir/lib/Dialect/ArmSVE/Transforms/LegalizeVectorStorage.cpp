@@ -42,15 +42,16 @@ namespace {
 
 /// Checks if a vector type is a SVE mask [2].
 bool isSVEMaskType(VectorType type) {
+  int64_t lastBaseDim = type.getBaseShape().back();
   return type.getRank() > 0 && type.getElementType().isInteger(1) &&
-         type.getScalableDims().back() && type.getShape().back() < 16 &&
-         llvm::isPowerOf2_32(type.getShape().back()) &&
-         !llvm::is_contained(type.getScalableDims().drop_back(), true);
+         type.getScalableDims().back() != ShapedType::kDynamic &&
+         lastBaseDim < 16 && llvm::isPowerOf2_32(lastBaseDim) &&
+         !llvm::is_contained(type.getShape().drop_back(), ShapedType::kDynamic);
 }
 
 VectorType widenScalableMaskTypeToSvbool(VectorType type) {
   assert(isSVEMaskType(type));
-  return VectorType::Builder(type).setDim(type.getRank() - 1, 16);
+  return VectorType::Builder(type).setScalableDim(type.getRank() - 1, 16);
 }
 
 /// A helper for cloning an op and replacing it will a new version, updated by a

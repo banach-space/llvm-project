@@ -253,7 +253,8 @@ bool mlir::vector::isDisjointTransferIndices(
     } else {
       // For this dimension, we slice a part of the memref we need to make sure
       // the intervals accessed don't overlap.
-      int64_t vectorDim = transferA.getVectorType().getDimSize(i - rankOffset);
+      int64_t vectorDim =
+          transferA.getVectorType().getBaseDimSize(i - rankOffset);
       if (cstIndexA.has_value() && cstIndexB.has_value()) {
         int64_t distance = std::abs(*cstIndexA - *cstIndexB);
         if (distance >= vectorDim)
@@ -477,7 +478,7 @@ MultiDimReductionOp::getShapeForUnroll() {
 
 LogicalResult MultiDimReductionOp::verify() {
   SmallVector<int64_t> targetShape;
-  SmallVector<bool> scalableDims;
+  SmallVector<int64_t> scalableDims;
   Type inferredReturnType;
   auto sourceScalableDims = getSourceVectorType().getScalableDims();
   for (auto [dimIdx, dimSize] :
@@ -690,7 +691,7 @@ struct ElideSingleElementReduction : public OpRewritePattern<ReductionOp> {
     }
 
     auto vectorType = reductionOp.getSourceVectorType();
-    if (vectorType.getRank() != 0 && vectorType.getDimSize(0) != 1)
+    if (vectorType.getRank() != 0 && vectorType.getBaseDimSize(0) != 1)
       return failure();
 
     Location loc = reductionOp.getLoc();
@@ -870,7 +871,8 @@ static bool verifyDimMap(VectorType lhsType, VectorType rhsType,
   for (auto &dimPair : map) {
     if (dimPair.first < 0 || dimPair.first >= lhsType.getRank() ||
         dimPair.second < 0 || dimPair.second >= rhsType.getRank() ||
-        lhsType.getDimSize(dimPair.first) != rhsType.getDimSize(dimPair.second))
+        lhsType.getBaseDimSize(dimPair.first) !=
+            rhsType.getBaseDimSize(dimPair.second))
       return false;
   }
   return true;
@@ -896,14 +898,14 @@ static LogicalResult verifyOutputShape(
   for (int64_t i = 0, e = lhsType.getRank(); i < e; ++i) {
     if (lhsContractingDimSet.count(i) > 0)
       continue;
-    expectedResultDims.push_back(lhsType.getDimSize(i));
+    expectedResultDims.push_back(lhsType.getBaseDimSize(i));
   }
 
   // Add free dimensions from 'rhsType' to 'expectedResultDims'.
   for (int64_t i = 0, e = rhsType.getRank(); i < e; ++i) {
     if (rhsContractingDimSet.count(i) > 0 || rhsBatchDimSet.count(i) > 0)
       continue;
-    expectedResultDims.push_back(rhsType.getDimSize(i));
+    expectedResultDims.push_back(rhsType.getBaseDimSize(i));
   }
 
   // Verify 'expectedResultDims'.
@@ -1048,7 +1050,7 @@ Type ContractionOp::getExpectedMaskType() {
 
   unsigned numVecDims = lhsIdxMap.getNumDims();
   SmallVector<int64_t> maskShape(numVecDims, ShapedType::kDynamic);
-  SmallVector<bool> maskShapeScalableDims(numVecDims, false);
+  SmallVector<int64_t> maskShapeScalableDims(numVecDims, false);
 
   // Using the information in the indexing maps, extract the size of each
   // dimension in the vector.contract operation from the two input operands.
@@ -1063,8 +1065,11 @@ Type ContractionOp::getExpectedMaskType() {
         rhsType.getScalableDims()[dimIdx];
   }
 
-  assert(!ShapedType::isDynamicShape(maskShape) &&
-         "Mask shape couldn't be computed");
+  //---------------------------------------------------------
+  // TODO: Replace with some clever check
+  //---------------------------------------------------------
+  // assert(!ShapedType::isDynamicShape(maskShape) &&
+  //        "Mask shape couldn't be computed");
 
   return VectorType::get(maskShape,
                          IntegerType::get(lhsType.getContext(), /*width=*/1),
@@ -1345,7 +1350,8 @@ LogicalResult vector::ExtractOp::verify() {
   for (auto [idx, pos] : llvm::enumerate(position)) {
     if (pos.is<Attribute>()) {
       int64_t constIdx = cast<IntegerAttr>(pos.get<Attribute>()).getInt();
-      if (constIdx < 0 || constIdx >= getSourceVectorType().getDimSize(idx)) {
+      if (constIdx < 0 ||
+          constIdx >= getSourceVectorType().getBaseDimSize(idx)) {
         return emitOpError("expected position attribute #")
                << (idx + 1)
                << " to be a non-negative integer smaller than the "
@@ -1712,7 +1718,10 @@ static Value foldExtractFromShapeCast(ExtractOp extractOp) {
 
   // Get the nth dimension size starting from lowest dimension.
   auto getDimReverse = [](VectorType type, int64_t n) {
-    return type.getShape().take_back(n + 1).front();
+    //-------------------------------------------------------------------------
+    // TODO: getBaseShape() returns a temporary
+    //-------------------------------------------------------------------------
+    return ArrayRef<int64_t>(type.getBaseShape()).take_back(n + 1).front();
   };
   int64_t destinationRank =
       llvm::isa<VectorType>(extractOp.getType())
@@ -1791,8 +1800,9 @@ static Value foldExtractFromExtractStrided(ExtractOp extractOp) {
   while (!sliceOffsets.empty()) {
     size_t lastOffset = sliceOffsets.size() - 1;
     if (sliceOffsets.back() != 0 ||
-        extractStridedSliceOp.getType().getDimSize(lastOffset) !=
-            extractStridedSliceOp.getSourceVectorType().getDimSize(lastOffset))
+        extractStridedSliceOp.getType().getBaseDimSize(lastOffset) !=
+            extractStridedSliceOp.getSourceVectorType().getBaseDimSize(
+                lastOffset))
       break;
     sliceOffsets.pop_back();
   }
@@ -1852,10 +1862,10 @@ static Value foldExtractStridedOpFromInsertChain(ExtractOp extractOp) {
     SmallVector<int64_t, 4> offsetDiffs;
     for (unsigned dim = 0, e = extractOffsets.size(); dim < e; ++dim) {
       int64_t start = insertOffsets[dim];
-      int64_t size =
-          (dim < insertRankDiff)
-              ? 1
-              : insertOp.getSourceVectorType().getDimSize(dim - insertRankDiff);
+      int64_t size = (dim < insertRankDiff)
+                         ? 1
+                         : insertOp.getSourceVectorType().getBaseDimSize(
+                               dim - insertRankDiff);
       int64_t end = start + size;
       int64_t offset = extractOffsets[dim];
       // Check if the start of the extract offset is in the interval inserted.
@@ -1874,9 +1884,9 @@ static Value foldExtractStridedOpFromInsertChain(ExtractOp extractOp) {
       int64_t srcRankDiff =
           insertOp.getSourceVectorType().getRank() - destinationRank;
       for (int64_t i = 0; i < destinationRank; i++) {
-        if (insertOp.getSourceVectorType().getDimSize(i + srcRankDiff) !=
-            insertOp.getDestVectorType().getDimSize(i + srcRankDiff +
-                                                    insertRankDiff))
+        if (insertOp.getSourceVectorType().getBaseDimSize(i + srcRankDiff) !=
+            insertOp.getDestVectorType().getBaseDimSize(i + srcRankDiff +
+                                                        insertRankDiff))
           return Value();
       }
       extractOp.getVectorMutable().assign(insertOp.getSource());
@@ -1926,7 +1936,7 @@ static Value foldScalarExtractFromFromElements(ExtractOp extractOp) {
   int stride = 1;
   for (int i = rank - 1; i >= 0; --i) {
     flatIndex += indices[i] * stride;
-    stride *= vecType.getDimSize(i);
+    stride *= vecType.getBaseDimSize(i);
   }
   return fromElementsOp.getElements()[flatIndex];
 }
@@ -2112,7 +2122,7 @@ public:
         // If any position is outside the range from the `create_mask`, then the
         // extracted mask will be all-false.
         allFalse |= pos >= createMaskBound;
-      } else if (createMaskBound < maskType.getDimSize(dimIdx)) {
+      } else if (createMaskBound < maskType.getBaseDimSize(dimIdx)) {
         // This dim is not all-true and since this is a dynamic index we don't
         // know if the extraction is within the true or false region.
         // Note: Zero dims have already handled via getMaskFormat().
@@ -2191,7 +2201,7 @@ LogicalResult foldExtractFromFromElements(ExtractOp extractOp,
   int stride = 1;
   for (int64_t i = inputType.getRank() - 1; i >= 0; --i) {
     flatIndex += firstElementPos[i] * stride;
-    stride *= inputType.getDimSize(i);
+    stride *= inputType.getBaseDimSize(i);
   }
 
   // Replace the op with a smaller from_elements op.
@@ -2414,26 +2424,25 @@ BroadcastableToResult mlir::vector::isBroadcastableTo(
     // Check fixed-width dims.
     int64_t srcDim = srcVectorType.getDimSize(dimIdx);
     int64_t dstDim = dstVectorType.getDimSize(lead + dimIdx);
-    if (srcDim != 1 && srcDim != dstDim)
+    if (srcDim != ShapedType::kDynamic && srcDim != 1 && srcDim != dstDim)
       foundMismatchingDims = true;
 
     // Check scalable flags.
-    bool srcDimScalableFlag = srcVectorType.getScalableDims()[dimIdx];
-    bool dstDimScalableFlag = dstVectorType.getScalableDims()[lead + dimIdx];
-    if ((srcDim == 1 && srcDimScalableFlag && dstDim != 1) ||
+    int64_t srcScalableDim = srcVectorType.getScalableDims()[dimIdx];
+    int64_t dstScalableDim = dstVectorType.getScalableDims()[lead + dimIdx];
+    if ((srcScalableDim != dstScalableDim) &&
         // 1 -> [N] is fine, everything else should be rejected when mixing
         // fixed-width and scalable dims
-        (srcDimScalableFlag != dstDimScalableFlag &&
-         (srcDim != 1 || srcDimScalableFlag)))
+        (srcDim != 1))
       foundMismatchingDims = true;
 
     if (foundMismatchingDims) {
       if (mismatchingDims != nullptr) {
         mismatchingDims->first.dim = srcDim;
-        mismatchingDims->first.isScalable = srcDimScalableFlag;
+        mismatchingDims->first.scalableDim = srcScalableDim;
 
         mismatchingDims->second.dim = dstDim;
-        mismatchingDims->second.isScalable = dstDimScalableFlag;
+        mismatchingDims->second.scalableDim = dstScalableDim;
       }
       return BroadcastableToResult::DimensionMismatch;
     }
@@ -2451,13 +2460,19 @@ LogicalResult BroadcastOp::verify() {
   if (res == BroadcastableToResult::SourceRankHigher)
     return emitOpError("source rank higher than destination rank");
   if (res == BroadcastableToResult::DimensionMismatch) {
+    bool firstDimScalable =
+        (mismatchingDims.first.scalableDim != ShapedType::kDynamic);
+    bool secondDimScalable =
+        (mismatchingDims.second.scalableDim != ShapedType::kDynamic);
+    int64_t firstDim = (firstDimScalable ? mismatchingDims.first.scalableDim
+                                         : mismatchingDims.first.dim);
+    int64_t secondDim = (secondDimScalable ? mismatchingDims.second.scalableDim
+                                           : mismatchingDims.second.dim);
     return emitOpError("dimension mismatch (")
-           << (mismatchingDims.first.isScalable ? "[" : "")
-           << mismatchingDims.first.dim
-           << (mismatchingDims.first.isScalable ? "]" : "") << " vs. "
-           << (mismatchingDims.second.isScalable ? "[" : "")
-           << mismatchingDims.second.dim
-           << (mismatchingDims.second.isScalable ? "]" : "") << ")";
+           << (firstDimScalable ? "[" : "") << firstDim
+           << (firstDimScalable ? "]" : "") << " vs. "
+           << (secondDimScalable ? "[" : "") << secondDim
+           << (secondDimScalable ? "]" : "") << ")";
   }
   if (res == BroadcastableToResult::SourceTypeNotAVector)
     return emitOpError("source type is not a vector");
@@ -2522,9 +2537,9 @@ LogicalResult ShuffleOp::verify() {
 
   // Verify all but leading dimension sizes.
   for (int64_t r = 1; r < v1Rank; ++r) {
-    int64_t resDim = resultType.getDimSize(r);
-    int64_t v1Dim = v1Type.getDimSize(r);
-    int64_t v2Dim = v2Type.getDimSize(r);
+    int64_t resDim = resultType.getBaseDimSize(r);
+    int64_t v1Dim = v1Type.getBaseDimSize(r);
+    int64_t v2Dim = v2Type.getBaseDimSize(r);
     if (resDim != v1Dim || v1Dim != v2Dim)
       return emitOpError("dimension mismatch");
   }
@@ -2533,11 +2548,11 @@ LogicalResult ShuffleOp::verify() {
   int64_t maskLength = mask.size();
   if (maskLength <= 0)
     return emitOpError("invalid mask length");
-  if (maskLength != resultType.getDimSize(0))
+  if (maskLength != resultType.getBaseDimSize(0))
     return emitOpError("mask length mismatch");
   // Verify all indices.
-  int64_t indexSize = (v1Type.getRank() == 0 ? 1 : v1Type.getDimSize(0)) +
-                      (v2Type.getRank() == 0 ? 1 : v2Type.getDimSize(0));
+  int64_t indexSize = (v1Type.getRank() == 0 ? 1 : v1Type.getBaseDimSize(0)) +
+                      (v2Type.getRank() == 0 ? 1 : v2Type.getBaseDimSize(0));
   for (auto [idx, maskPos] : llvm::enumerate(mask)) {
     if (maskPos < 0 || maskPos >= indexSize)
       return emitOpError("mask index #") << (idx + 1) << " out of range";
@@ -2581,12 +2596,12 @@ OpFoldResult vector::ShuffleOp::fold(FoldAdaptor adaptor) {
 
   // fold shuffle V1, V2, [0, 1, 2, 3] : <4xi32>, <2xi32> -> V1
   if (!v1Type.isScalable() &&
-      isStepIndexArray(getMask(), 0, v1Type.getDimSize(0)))
+      isStepIndexArray(getMask(), 0, v1Type.getBaseDimSize(0)))
     return getV1();
   // fold shuffle V1, V2, [4, 5] : <4xi32>, <2xi32> -> V2
   if (!getV1VectorType().isScalable() && !getV2VectorType().isScalable() &&
-      isStepIndexArray(getMask(), getV1VectorType().getDimSize(0),
-                       getV2VectorType().getDimSize(0)))
+      isStepIndexArray(getMask(), getV1VectorType().getBaseDimSize(0),
+                       getV2VectorType().getBaseDimSize(0)))
     return getV2();
 
   Attribute lhs = adaptor.getV1(), rhs = adaptor.getV2();
@@ -2599,7 +2614,7 @@ OpFoldResult vector::ShuffleOp::fold(FoldAdaptor adaptor) {
   // manipulation.
   if (lhsType.getRank() != 1)
     return {};
-  int64_t lhsSize = lhsType.getDimSize(0);
+  int64_t lhsSize = lhsType.getBaseDimSize(0);
 
   SmallVector<Attribute> results;
   auto lhsElements = llvm::cast<DenseElementsAttr>(lhs).getValues<Attribute>();
@@ -2811,7 +2826,7 @@ LogicalResult InsertOp::verify() {
   for (auto [idx, pos] : llvm::enumerate(position)) {
     if (auto attr = pos.dyn_cast<Attribute>()) {
       int64_t constIdx = cast<IntegerAttr>(attr).getInt();
-      if (constIdx < 0 || constIdx >= destVectorType.getDimSize(idx)) {
+      if (constIdx < 0 || constIdx >= destVectorType.getBaseDimSize(idx)) {
         return emitOpError("expected position attribute #")
                << (idx + 1)
                << " to be a non-negative integer smaller than the "
@@ -2834,8 +2849,11 @@ public:
   LogicalResult matchAndRewrite(InsertOp insertOp,
                                 PatternRewriter &rewriter) const override {
     auto srcVecType = llvm::dyn_cast<VectorType>(insertOp.getSourceType());
-    if (!srcVecType || insertOp.getDestVectorType().getNumElements() !=
-                           srcVecType.getNumElements())
+    //-----------------------------------------------------------------------
+    // TODO: Verify scalability
+    //-----------------------------------------------------------------------
+    if (!srcVecType || insertOp.getDestVectorType().getVectorNumElements() !=
+                           srcVecType.getVectorNumElements())
       return failure();
     rewriter.replaceOpWithNewOp<BroadcastOp>(
         insertOp, insertOp.getDestVectorType(), insertOp.getSource());
@@ -3085,31 +3103,56 @@ LogicalResult InsertStridedSliceOp::verify() {
   auto destShape = destVectorType.getShape();
   SmallVector<int64_t, 4> sourceShapeAsDestShape(
       destShape.size() - sourceShape.size(), 0);
-  sourceShapeAsDestShape.append(sourceShape.begin(), sourceShape.end());
+
+  // FIXME: Temporary fix to make sure that we use "fixed" sizes for checking
+  // bounds (instead of kDynamic)
+  SmallVector<int64_t> tempSourceShape(sourceShape);
+  for (int i = 0, e = sourceShape.size(); i < e; i++) {
+    if (tempSourceShape[i] == ShapedType::kDynamic)
+      tempSourceShape[i] = sourceVectorType.getScalableDims()[i];
+  }
+  sourceShapeAsDestShape.append(tempSourceShape.begin(), tempSourceShape.end());
   auto offName = InsertStridedSliceOp::getOffsetsAttrName();
   auto stridesName = InsertStridedSliceOp::getStridesAttrName();
-  if (failed(isIntegerArrayAttrConfinedToShape(*this, offsets, destShape,
+
+  // FIXME: Temporary fix to make sure that we use "fixed" sizes for checking
+  // bounds (instead of kDynamic)
+  SmallVector<int64_t> tempDestShape(destShape);
+  for (int i = 0, e = destShape.size(); i < e; i++) {
+    if (tempDestShape[i] == ShapedType::kDynamic)
+      tempDestShape[i] = destVectorType.getScalableDims()[i];
+  }
+
+  if (failed(isIntegerArrayAttrConfinedToShape(*this, offsets, tempDestShape,
                                                offName)) ||
       failed(isIntegerArrayAttrConfinedToRange(*this, strides, /*min=*/1,
                                                /*max=*/1, stridesName,
                                                /*halfOpen=*/false)) ||
       failed(isSumOfIntegerArrayAttrConfinedToShape(
           *this, offsets,
-          makeI64ArrayAttr(sourceShapeAsDestShape, getContext()), destShape,
+          makeI64ArrayAttr(sourceShapeAsDestShape, getContext()), tempDestShape,
           offName, "source vector shape",
           /*halfOpen=*/false, /*min=*/1)))
     return failure();
 
   unsigned rankDiff = destShape.size() - sourceShape.size();
   for (unsigned idx = 0; idx < sourceShape.size(); ++idx) {
-    if (sourceVectorType.getScalableDims()[idx] !=
-        destVectorType.getScalableDims()[idx + rankDiff]) {
+    //----------------------------------------------------------------
+    // TODO: Better way to check both input and output are indeed scalable
+    //----------------------------------------------------------------
+    if ((!sourceVectorType.isScalableDim(idx) &&
+         destVectorType.isScalableDim(idx + rankDiff)) ||
+        (sourceVectorType.isScalableDim(idx) &&
+         !destVectorType.isScalableDim(idx + rankDiff))) {
       return emitOpError("mismatching scalable flags (at source vector idx=")
              << idx << ")";
     }
-    if (sourceVectorType.getScalableDims()[idx]) {
-      auto sourceSize = sourceShape[idx];
-      auto destSize = destShape[idx + rankDiff];
+    if (sourceVectorType.getScalableDims()[idx] != ShapedType::kDynamic) {
+      //----------------------------------------------------------------
+      // TODO: Smarter way to extract scalale dims
+      //----------------------------------------------------------------
+      auto sourceSize = sourceVectorType.getScalableDims()[idx];
+      auto destSize = destVectorType.getScalableDims()[idx + rankDiff];
       if (sourceSize != destSize) {
         return emitOpError("expected size at idx=")
                << idx
@@ -3308,13 +3351,13 @@ ParseResult OuterProductOp::parse(OpAsmParser &parser, OperationState &result) {
 
   VectorType resType;
   if (vRHS) {
-    SmallVector<bool> scalableDimsRes{vLHS.getScalableDims()[0],
-                                      vRHS.getScalableDims()[0]};
+    SmallVector<int64_t> scalableDimsRes{vLHS.getScalableDims()[0],
+                                         vRHS.getScalableDims()[0]};
     resType = VectorType::get({vLHS.getDimSize(0), vRHS.getDimSize(0)},
                               vLHS.getElementType(), scalableDimsRes);
   } else {
     // Scalar RHS operand
-    SmallVector<bool> scalableDimsRes{vLHS.getScalableDims()[0]};
+    SmallVector<int64_t> scalableDimsRes{vLHS.getScalableDims()[0]};
     resType = VectorType::get({vLHS.getDimSize(0)}, vLHS.getElementType(),
                               scalableDimsRes);
   }
@@ -3349,9 +3392,9 @@ LogicalResult OuterProductOp::verify() {
       return emitOpError("expected 1-d vector for operand #2");
     if (vRES.getRank() != 2)
       return emitOpError("expected 2-d vector result");
-    if (vLHS.getDimSize(0) != vRES.getDimSize(0))
+    if (vLHS.getBaseDimSize(0) != vRES.getBaseDimSize(0))
       return emitOpError("expected #1 operand dim to match result dim #1");
-    if (vRHS.getDimSize(0) != vRES.getDimSize(1))
+    if (vRHS.getBaseDimSize(0) != vRES.getBaseDimSize(1))
       return emitOpError("expected #2 operand dim to match result dim #2");
     if (vLHS.isScalable() && !vRHS.isScalable()) {
       // This restriction reflects what's currently supported in terms of
@@ -3363,7 +3406,7 @@ LogicalResult OuterProductOp::verify() {
     // An AXPY operation.
     if (vRES.getRank() != 1)
       return emitOpError("expected 1-d vector result");
-    if (vLHS.getDimSize(0) != vRES.getDimSize(0))
+    if (vLHS.getBaseDimSize(0) != vRES.getBaseDimSize(0))
       return emitOpError("expected #1 operand dim to match result dim #1");
   }
 
@@ -3402,14 +3445,30 @@ static Type inferStridedSliceOpResultType(VectorType vectorType,
   assert(offsets.size() == sizes.size() && offsets.size() == strides.size());
   SmallVector<int64_t, 4> shape;
   shape.reserve(vectorType.getRank());
-  unsigned idx = 0;
-  for (unsigned e = offsets.size(); idx < e; ++idx)
-    shape.push_back(llvm::cast<IntegerAttr>(sizes[idx]).getInt());
-  for (unsigned e = vectorType.getShape().size(); idx < e; ++idx)
-    shape.push_back(vectorType.getShape()[idx]);
+  SmallVector<int64_t> newScalableDims;
+  newScalableDims.reserve(vectorType.getRank());
 
-  return VectorType::get(shape, vectorType.getElementType(),
-                         vectorType.getScalableDims());
+  unsigned idx = 0;
+  for (unsigned e = offsets.size(); idx < e; ++idx) {
+    if (vectorType.isScalableDim(idx)) {
+      newScalableDims.push_back(llvm::cast<IntegerAttr>(sizes[idx]).getInt());
+      shape.push_back((ShapedType::kDynamic));
+    } else {
+      shape.push_back(llvm::cast<IntegerAttr>(sizes[idx]).getInt());
+      newScalableDims.push_back(ShapedType::kDynamic);
+    }
+  }
+  for (unsigned e = vectorType.getShape().size(); idx < e; ++idx) {
+    if (vectorType.isScalableDim(idx)) {
+      newScalableDims.push_back(vectorType.getBaseDimSize(idx));
+      shape.push_back((ShapedType::kDynamic));
+    } else {
+      newScalableDims.push_back((ShapedType::kDynamic));
+      shape.push_back(vectorType.getBaseDimSize(idx));
+    }
+  }
+
+  return VectorType::get(shape, vectorType.getElementType(), newScalableDims);
 }
 
 void ExtractStridedSliceOp::build(OpBuilder &builder, OperationState &result,
@@ -3440,7 +3499,11 @@ LogicalResult ExtractStridedSliceOp::verify() {
     return emitOpError(
         "expected offsets, sizes and strides attributes of same size");
 
-  auto shape = type.getShape();
+  // -----------------------------------------------------------------
+  // TODO: Rename this variable?
+  // -----------------------------------------------------------------
+  auto shape = type.getBaseShape();
+
   auto offName = getOffsetsAttrName();
   auto sizesName = getSizesAttrName();
   auto stridesName = getStridesAttrName();
@@ -3463,14 +3526,19 @@ LogicalResult ExtractStridedSliceOp::verify() {
                                                     /*halfOpen=*/false)))
     return failure();
 
-  auto resultType = inferStridedSliceOpResultType(getSourceVectorType(),
-                                                  offsets, sizes, strides);
+  auto resultType1 = inferStridedSliceOpResultType(getSourceVectorType(),
+                                                   offsets, sizes, strides);
+  VectorType resultType = cast<VectorType>(resultType1);
   if (getResult().getType() != resultType)
     return emitOpError("expected result type to be ") << resultType;
 
   for (unsigned idx = 0; idx < sizes.size(); ++idx) {
-    if (type.getScalableDims()[idx]) {
-      auto inputDim = type.getShape()[idx];
+    if (type.getScalableDims()[idx] != ShapedType::kDynamic) {
+      // FIXME: This would work much better if we could do
+      // `type.getFixedDim(i)`)
+      auto inputDim = (type.getShape()[idx] != ShapedType::kDynamic
+                           ? type.getShape()[idx]
+                           : type.getScalableDims()[idx]);
       auto inputSize = llvm::cast<IntegerAttr>(sizes[idx]).getInt();
       if (inputDim != inputSize)
         return emitOpError("expected size at idx=")
@@ -3514,7 +3582,7 @@ foldExtractStridedOpFromInsertChain(ExtractStridedSliceOp op) {
       if (getElement(extractStrides, dim) != getElement(insertStrides, dim))
         return failure();
       int64_t start = getElement(insertOffsets, dim);
-      int64_t end = start + insertOp.getSourceVectorType().getDimSize(dim);
+      int64_t end = start + insertOp.getSourceVectorType().getBaseDimSize(dim);
       int64_t offset = getElement(extractOffsets, dim);
       int64_t size = getElement(extractSizes, dim);
       // Check if the start of the extract offset is in the interval inserted.
@@ -3734,7 +3802,8 @@ public:
     // use a broadcast as the original dimensions are untouched.
     bool lowerDimMatch = true;
     for (unsigned i = 0; i < srcRank; i++) {
-      if (srcVecType.getDimSize(i) != dstVecType.getDimSize(i + rankDiff)) {
+      if (srcVecType.getBaseDimSize(i) !=
+          dstVecType.getBaseDimSize(i + rankDiff)) {
         lowerDimMatch = false;
         break;
       }
@@ -3981,7 +4050,7 @@ VectorType mlir::vector::inferTransferOpMaskType(VectorType vecType,
   assert(invPermMap && "Inversed permutation map couldn't be computed");
   SmallVector<int64_t, 8> maskShape = invPermMap.compose(vecType.getShape());
 
-  SmallVector<bool> scalableDims =
+  SmallVector<int64_t> scalableDims =
       applyPermutationMap(invPermMap, vecType.getScalableDims());
 
   return VectorType::get(maskShape, i1Type, scalableDims);
@@ -4123,7 +4192,7 @@ static bool isInBounds(TransferOp op, int64_t resultIdx, int64_t indicesIdx) {
     return false;
 
   int64_t sourceSize = op.getShapedType().getDimSize(indicesIdx);
-  int64_t vectorSize = op.getVectorType().getDimSize(resultIdx);
+  int64_t vectorSize = op.getVectorType().getBaseDimSize(resultIdx);
 
   return cstOp.value() + vectorSize <= sourceSize;
 }
@@ -4296,7 +4365,7 @@ struct TransferReadAfterWriteToBroadcast
     // final shape we want.
     ArrayRef<int64_t> destShape = readOp.getVectorType().getShape();
     SmallVector<int64_t> broadcastShape(destShape.size());
-    SmallVector<bool> broadcastScalableFlags(destShape.size());
+    SmallVector<int64_t> broadcastScalableFlags(destShape.size());
     for (const auto &pos : llvm::enumerate(permutation)) {
       broadcastShape[pos.value()] = destShape[pos.index()];
       broadcastScalableFlags[pos.value()] =
@@ -4871,7 +4940,7 @@ LogicalResult MaskedLoadOp::verify() {
     return emitOpError("base and result element type should match");
   if (llvm::size(getIndices()) != memType.getRank())
     return emitOpError("requires ") << memType.getRank() << " indices";
-  if (resVType.getDimSize(0) != maskVType.getDimSize(0))
+  if (resVType.getBaseDimSize(0) != maskVType.getBaseDimSize(0))
     return emitOpError("expected result dim to match mask dim");
   if (resVType != passVType)
     return emitOpError("expected pass_thru of same type as result type");
@@ -4924,7 +4993,7 @@ LogicalResult MaskedStoreOp::verify() {
     return emitOpError("base and valueToStore element type should match");
   if (llvm::size(getIndices()) != memType.getRank())
     return emitOpError("requires ") << memType.getRank() << " indices";
-  if (valueVType.getDimSize(0) != maskVType.getDimSize(0))
+  if (valueVType.getBaseDimSize(0) != maskVType.getBaseDimSize(0))
     return emitOpError("expected valueToStore dim to match mask dim");
   return success();
 }
@@ -5041,9 +5110,9 @@ LogicalResult ScatterOp::verify() {
     return emitOpError("base and valueToStore element type should match");
   if (llvm::size(getIndices()) != memType.getRank())
     return emitOpError("requires ") << memType.getRank() << " indices";
-  if (valueVType.getDimSize(0) != indVType.getDimSize(0))
+  if (valueVType.getBaseDimSize(0) != indVType.getBaseDimSize(0))
     return emitOpError("expected valueToStore dim to match indices dim");
-  if (valueVType.getDimSize(0) != maskVType.getDimSize(0))
+  if (valueVType.getBaseDimSize(0) != maskVType.getBaseDimSize(0))
     return emitOpError("expected valueToStore dim to match mask dim");
   return success();
 }
@@ -5087,7 +5156,7 @@ LogicalResult ExpandLoadOp::verify() {
     return emitOpError("base and result element type should match");
   if (llvm::size(getIndices()) != memType.getRank())
     return emitOpError("requires ") << memType.getRank() << " indices";
-  if (resVType.getDimSize(0) != maskVType.getDimSize(0))
+  if (resVType.getBaseDimSize(0) != maskVType.getBaseDimSize(0))
     return emitOpError("expected result dim to match mask dim");
   if (resVType != passVType)
     return emitOpError("expected pass_thru of same type as result type");
@@ -5134,7 +5203,7 @@ LogicalResult CompressStoreOp::verify() {
     return emitOpError("base and valueToStore element type should match");
   if (llvm::size(getIndices()) != memType.getRank())
     return emitOpError("requires ") << memType.getRank() << " indices";
-  if (valueVType.getDimSize(0) != maskVType.getDimSize(0))
+  if (valueVType.getBaseDimSize(0) != maskVType.getBaseDimSize(0))
     return emitOpError("expected valueToStore dim to match mask dim");
   return success();
 }
@@ -5173,6 +5242,9 @@ void CompressStoreOp::getCanonicalizationPatterns(RewritePatternSet &results,
 
 /// Returns true if each element of 'a' is equal to the product of a contiguous
 /// sequence of the elements of 'b'. Returns false otherwise.
+/// ---------------------------------------------------------------------------
+/// TODO: Check scalability!!!
+/// ---------------------------------------------------------------------------
 static bool isValidShapeCast(ArrayRef<int64_t> a, ArrayRef<int64_t> b) {
   unsigned rankA = a.size();
   unsigned rankB = b.size();
@@ -5213,8 +5285,8 @@ static LogicalResult verifyVectorShapeCast(Operation *op,
   // Check that element type is the same.
   if (sourceVectorType.getElementType() != resultVectorType.getElementType())
     return op->emitOpError("source/result vectors must have same element type");
-  auto sourceShape = sourceVectorType.getShape();
-  auto resultShape = resultVectorType.getShape();
+  auto sourceShape = sourceVectorType.getBaseShape();
+  auto resultShape = resultVectorType.getBaseShape();
 
   // Check that product of source dim sizes matches product of result dim sizes.
   int64_t sourceDimProduct = std::accumulate(
@@ -5273,11 +5345,14 @@ OpFoldResult ShapeCastOp::fold(FoldAdaptor adaptor) {
     // Only allows valid transitive folding.
     VectorType srcType = llvm::cast<VectorType>(otherOp.getSource().getType());
     VectorType resultType = llvm::cast<VectorType>(getResult().getType());
+
+    auto srcBaseShape = srcType.getBaseShape();
+    auto retBaseShape = resultType.getBaseShape();
     if (srcType.getRank() < resultType.getRank()) {
-      if (!isValidShapeCast(srcType.getShape(), resultType.getShape()))
+      if (!isValidShapeCast(srcBaseShape, retBaseShape))
         return {};
     } else if (srcType.getRank() > resultType.getRank()) {
-      if (!isValidShapeCast(resultType.getShape(), srcType.getShape()))
+      if (!isValidShapeCast(retBaseShape, srcBaseShape))
         return {};
     } else {
       return {};
@@ -5329,10 +5404,11 @@ static VectorType trimTrailingOneDims(VectorType oldType) {
   ArrayRef<int64_t> oldShape = oldType.getShape();
   ArrayRef<int64_t> newShape = oldShape;
 
-  ArrayRef<bool> oldScalableDims = oldType.getScalableDims();
-  ArrayRef<bool> newScalableDims = oldScalableDims;
+  ArrayRef<int64_t> oldScalableDims = oldType.getScalableDims();
+  ArrayRef<int64_t> newScalableDims = oldScalableDims;
 
-  while (!newShape.empty() && newShape.back() == 1 && !newScalableDims.back()) {
+  while (!newShape.empty() && newShape.back() == 1 &&
+         newScalableDims.back() == ShapedType::kDynamic) {
     newShape = newShape.drop_back(1);
     newScalableDims = newScalableDims.drop_back(1);
   }
@@ -5461,6 +5537,9 @@ public:
     // Otherwise, if the final result has the same element count, we can replace
     // with a shape cast.
     if (auto srcType = dyn_cast<VectorType>(broadcastOp.getSourceType())) {
+      // There is not `getNumElements` for scalable vectors.
+      if (srcType.isScalable() ||shapeCastOp.getResultVectorType().isScalable())
+        return failure();
       if (srcType.getNumElements() ==
           shapeCastOp.getResultVectorType().getNumElements()) {
         rewriter.replaceOpWithNewOp<vector::ShapeCastOp>(
@@ -5491,7 +5570,8 @@ LogicalResult BitCastOp::verify() {
   auto resultVectorType = getResultVectorType();
 
   for (int64_t i = 0, e = sourceVectorType.getRank() - 1; i < e; i++) {
-    if (sourceVectorType.getDimSize(i) != resultVectorType.getDimSize(i))
+    if (sourceVectorType.getBaseDimSize(i) !=
+        resultVectorType.getBaseDimSize(i))
       return emitOpError("dimension size mismatch at: ") << i;
   }
 
@@ -5633,7 +5713,7 @@ void vector::TransposeOp::build(OpBuilder &builder, OperationState &result,
                                 Value vector, ArrayRef<int64_t> permutation) {
   VectorType vt = llvm::cast<VectorType>(vector.getType());
   SmallVector<int64_t, 4> transposedShape(vt.getRank());
-  SmallVector<bool, 4> transposedScalableDims(vt.getRank());
+  SmallVector<int64_t, 4> transposedScalableDims(vt.getRank());
   for (unsigned i = 0; i < permutation.size(); ++i) {
     transposedShape[i] = vt.getShape()[permutation[i]];
     transposedScalableDims[i] = vt.getScalableDims()[permutation[i]];
@@ -5685,7 +5765,8 @@ LogicalResult vector::TransposeOp::verify() {
     if (seen[ta.value()])
       return emitOpError("duplicate position index: ") << ta.value();
     seen[ta.value()] = true;
-    if (resultType.getDimSize(ta.index()) != vectorType.getDimSize(ta.value()))
+    if (resultType.getBaseDimSize(ta.index()) !=
+        vectorType.getBaseDimSize(ta.value()))
       return emitOpError("dimension size mismatch at: ") << ta.value();
   }
   return success();
@@ -5823,7 +5904,7 @@ void ConstantMaskOp::build(OpBuilder &builder, OperationState &result,
          kind == ConstantMaskKind::AllFalse);
   build(builder, result, type,
         kind == ConstantMaskKind::AllTrue
-            ? type.getShape()
+            ? type.getBaseShape()
             : SmallVector<int64_t>(type.getRank(), 0));
 }
 
@@ -5845,15 +5926,25 @@ LogicalResult ConstantMaskOp::verify() {
         "must specify array attr of size equal vector result rank");
   // Verify that each array attr element is in bounds of corresponding vector
   // result dimension size.
-  auto resultShape = resultType.getShape();
+  auto resultShape = resultType.getBaseShape();
   auto resultScalableDims = resultType.getScalableDims();
   ArrayRef<int64_t> maskDimSizes = getMaskDimSizes();
   for (const auto [index, maskDimSize] : llvm::enumerate(maskDimSizes)) {
-    if (maskDimSize < 0 || maskDimSize > resultShape[index])
+    // ----------------------------------------------
+    // TODO; A bit annoying that regular and scalable sizes have to be checked
+    // independently.
+    // ----------------------------------------------
+    if (maskDimSize < 0 || maskDimSize > resultType.getBaseDimSize(index))
       return emitOpError(
           "array attr of size out of bounds of vector result dimension size");
-    if (resultScalableDims[index] && maskDimSize != 0 &&
-        maskDimSize != resultShape[index])
+    // ----------------------------------------------
+    // TODO; A bit annoying that regular and scalable sizes have to be checked
+    // independently.
+    // TODO: Non-set scalable dim should be kDynamic instead!!!
+    // ----------------------------------------------
+    int64_t unsetScalableDim = ShapedType::kDynamic;
+    if (resultScalableDims[index] != unsetScalableDim && maskDimSize != 0 &&
+        maskDimSize != resultScalableDims[index])
       return emitOpError(
           "only supports 'none set' or 'all set' scalable dimensions");
   }
@@ -5941,12 +6032,12 @@ public:
   LogicalResult matchAndRewrite(CreateMaskOp createMaskOp,
                                 PatternRewriter &rewriter) const override {
     VectorType maskType = createMaskOp.getVectorType();
-    ArrayRef<int64_t> maskTypeDimSizes = maskType.getShape();
-    ArrayRef<bool> maskTypeDimScalableFlags = maskType.getScalableDims();
+    SmallVector<int64_t> maskTypeDimSizes = maskType.getBaseShape();
+    ArrayRef<int64_t> maskTypeDimScalableFlags = maskType.getScalableDims();
 
     // Special case: Rank zero shape.
-    constexpr std::array<int64_t, 1> rankZeroShape{1};
-    constexpr std::array<bool, 1> rankZeroScalableDims{false};
+    SmallVector<int64_t> rankZeroShape{1};
+    constexpr std::array<int64_t, 1> rankZeroScalableDims{ShapedType::kDynamic};
     if (maskType.getRank() == 0) {
       maskTypeDimSizes = rankZeroShape;
       maskTypeDimScalableFlags = rankZeroScalableDims;
@@ -5960,7 +6051,7 @@ public:
         // Constant value.
         // If the mask dim is non-scalable this can be any value.
         // If the mask dim is scalable only zero (all-false) is supported.
-        if (maskTypeDimScalableFlags[i] && intSize >= 0)
+        if (maskTypeDimScalableFlags[i] != ShapedType::kDynamic && intSize >= 0)
           return failure();
         constantDims.push_back(*intSize);
       } else if (auto vscaleMultiplier = getConstantVscaleMultiplier(dimSize)) {
@@ -6463,8 +6554,8 @@ static LogicalResult verifyDistributedType(Type expanded, Type distributed,
 
   SmallVector<int64_t> scales(expandedVecType.getRank(), 1);
   for (int64_t i = 0, e = expandedVecType.getRank(); i < e; i++) {
-    int64_t eDim = expandedVecType.getDimSize(i);
-    int64_t dDim = distributedVecType.getDimSize(i);
+    int64_t eDim = expandedVecType.getBaseDimSize(i);
+    int64_t dDim = distributedVecType.getBaseDimSize(i);
     if (eDim == dDim)
       continue;
     if (eDim % dDim != 0)

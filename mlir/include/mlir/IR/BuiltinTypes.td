@@ -1215,18 +1215,18 @@ def Builtin_Vector : Builtin_Type<"Vector", "vector",
   let parameters = (ins
     ArrayRefParameter<"int64_t">:$shape,
     Builtin_VectorTypeElementType:$elementType,
-    ArrayRefParameter<"bool">:$scalableDims
+    ArrayRefParameter<"int64_t">:$scalableDims
   );
   let builders = [
     TypeBuilderWithInferredContext<(ins
       "ArrayRef<int64_t>":$shape, "Type":$elementType,
-      CArg<"ArrayRef<bool>", "{}">:$scalableDims
+      CArg<"ArrayRef<int64_t>", "{}">:$scalableDims
     ), [{
       // While `scalableDims` is optional, its default value should be
       // `false` for every dim in `shape`.
-      SmallVector<bool> isScalableVec;
+      SmallVector<int64_t> isScalableVec;
       if (scalableDims.empty()) {
-        isScalableVec.resize(shape.size(), false);
+        isScalableVec.resize(shape.size(), ShapedType::kDynamic);
         scalableDims = isScalableVec;
       }
       return $_get(elementType.getContext(), shape, elementType, scalableDims);
@@ -1241,20 +1241,49 @@ def Builtin_Vector : Builtin_Type<"Vector", "vector",
     /// type. See "Builtin_VectorTypeElementType" for allowed types.
     static bool isValidElementType(Type t);
 
+    int64_t getVectorNumElements() {
+      int64_t res = 1;
+      for (size_t idx = 0, e = getRank(); idx < e; idx++) {
+        if (getShape()[idx] != ShapedType::kDynamic)
+          res *= getShape()[idx];
+        else
+          res *= getScalableDims()[idx];
+      }
+      return res;
+    }
+
+    SmallVector<int64_t> getBaseShape() const {
+      SmallVector<int64_t> res(getShape());
+      for (size_t idx = 0, e = getRank(); idx < e; idx++) {
+        if (res[idx] == ShapedType::kDynamic)
+          res[idx] = getScalableDims()[idx];
+      }
+      return res;
+    }
+    int64_t getBaseDimSize(unsigned idx) const {
+        if (getDimSize(idx) != ShapedType::kDynamic)
+          return getDimSize(idx);
+        else
+          return getScalableDims()[idx];
+    }
+    bool isScalableDim(size_t idx) {
+      return getScalableDims()[idx] != ShapedType::kDynamic;
+    }
+
     /// Returns true if the vector contains scalable dimensions.
     bool isScalable() const {
-      return llvm::is_contained(getScalableDims(), true);
+      return !llvm::all_of(getScalableDims(), [](auto dim) {return dim == ShapedType::kDynamic;});
     }
     bool allDimsScalable() const {
       // Treat 0-d vectors as fixed size.
       if (getRank() == 0)
         return false;
-      return !llvm::is_contained(getScalableDims(), false);
+      return llvm::all_of(getScalableDims(), [](auto dim) {return dim != ShapedType::kDynamic;});
     }
 
     /// Get the number of scalable dimensions.
     int64_t getNumScalableDims() const {
-      return llvm::count(getScalableDims(), true);
+      return llvm::count_if(getScalableDims(), [](int64_t dim){return dim != ShapedType::kDynamic;});
     }
 
     /// Get or create a new VectorType with the same shape as `this` and an

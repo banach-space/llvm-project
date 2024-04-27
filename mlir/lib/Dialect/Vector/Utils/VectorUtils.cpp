@@ -292,14 +292,17 @@ vector::createUnrollIterator(VectorType vType, int64_t targetRank) {
   auto shapeToUnroll = vType.getShape().drop_back(targetRank);
   auto scalableDimsToUnroll = vType.getScalableDims().drop_back(targetRank);
   auto it =
-      std::find(scalableDimsToUnroll.begin(), scalableDimsToUnroll.end(), true);
+      std::find_if(scalableDimsToUnroll.begin(), scalableDimsToUnroll.end(),
+                   [](int64_t dim) { return dim != ShapedType::kDynamic; });
   auto firstScalableDim = it - scalableDimsToUnroll.begin();
   if (firstScalableDim == 0)
     return {};
   // All scalable dimensions should be removed now.
   scalableDimsToUnroll = scalableDimsToUnroll.slice(0, firstScalableDim);
-  assert(!llvm::is_contained(scalableDimsToUnroll, true) &&
-         "unexpected leading scalable dimension");
+  assert(
+      llvm::all_of(scalableDimsToUnroll,
+                   [](int64_t dim) { return dim == ShapedType::kDynamic; }) &&
+      "unexpected leading scalable dimension");
   // Create an unroll iterator for leading dimensions.
   shapeToUnroll = shapeToUnroll.slice(0, firstScalableDim);
   return StaticTileOffsetRange(shapeToUnroll, /*unrollStep=*/1);

@@ -136,8 +136,10 @@ TEST(ShapedTypeTest, VectorTypeBuilder) {
   MLIRContext context;
   Type f32 = FloatType::getF32(&context);
 
-  SmallVector<int64_t> shape{2, 4, 8, 9, 1};
-  SmallVector<bool> scalableDims{true, false, true, false, false};
+  SmallVector<int64_t> shape{ShapedType::kDynamic, 4, ShapedType::kDynamic, 9,
+                             1};
+  SmallVector<int64_t> scalableDims{2, ShapedType::kDynamic, 8,
+                                    ShapedType::kDynamic, ShapedType::kDynamic};
   VectorType vectorType = VectorType::get(shape, f32, scalableDims);
 
   {
@@ -153,10 +155,14 @@ TEST(ShapedTypeTest, VectorTypeBuilder) {
   {
     // Set some dims.
     VectorType setTwoDims =
-        VectorType::Builder(vectorType).setDim(0, 10).setDim(3, 12);
-    ASSERT_EQ(setTwoDims.getShape(), ArrayRef<int64_t>({10, 4, 8, 12, 1}));
+        VectorType::Builder(vectorType).setScalableDim(0, 10).setDim(3, 12);
     ASSERT_EQ(vectorType.getElementType(), setTwoDims.getElementType());
-    ASSERT_EQ(vectorType.getScalableDims(), setTwoDims.getScalableDims());
+    ASSERT_EQ(setTwoDims.getShape(),
+              ArrayRef<int64_t>(
+                  {ShapedType::kDynamic, 4, ShapedType::kDynamic, 12, 1}));
+    ASSERT_EQ(setTwoDims.getScalableDims(),
+              ArrayRef<int64_t>({10, ShapedType::kDynamic, 8,
+                                 ShapedType::kDynamic, ShapedType::kDynamic}));
   }
 
   {

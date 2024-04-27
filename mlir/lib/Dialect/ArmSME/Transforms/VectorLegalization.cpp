@@ -145,9 +145,9 @@ auto decomposeToSMETiles(OpBuilder &builder, VectorType type,
                          bool transposeIndices = false) {
   return llvm::map_range(
       StaticTileOffsetRange(
-          type.getShape(),
-          {std::min(type.getDimSize(0), smeTileType.getDimSize(0)),
-           std::min(type.getDimSize(1), smeTileType.getDimSize(1))}),
+          type.getBaseShape(),
+          {std::min(type.getBaseDimSize(0), smeTileType.getBaseDimSize(0)),
+           std::min(type.getBaseDimSize(1), smeTileType.getBaseDimSize(1))}),
       [=](auto indices) {
         int row = int(indices[0]);
         int col = int(indices[1]);
@@ -162,8 +162,8 @@ auto decomposeToSMETiles(OpBuilder &builder, VectorType type,
 int getNumberOfSMETilesForVectorType(VectorType type) {
   assert(isMultipleOfSMETileVectorType(type) &&
          "`type` not multiple of SME tiles");
-  int64_t vectorRows = type.getDimSize(0);
-  int64_t vectorCols = type.getDimSize(1);
+  int64_t vectorRows = type.getBaseDimSize(0);
+  int64_t vectorCols = type.getBaseDimSize(1);
   auto elementType = type.getElementType();
   unsigned minNumElts = getSMETileSliceMinNumElts(elementType);
   return (vectorRows * vectorCols) / (minNumElts * minNumElts);
@@ -437,8 +437,9 @@ struct LegalizeMultiTileTransferWriteAsStoreLoop
     // Note: We also disallow masks where any dimension is > 16 because that
     // prevents the masking from being lowered to use arm_sve.psel.
     auto mask = writeOp.getMask();
-    if (!isSupportedMaskOp(mask) || (mask && (vectorType.getDimSize(0) > 16 ||
-                                              vectorType.getDimSize(1) > 16)))
+    if (!isSupportedMaskOp(mask) ||
+        (mask && (vectorType.getBaseDimSize(0) > 16 ||
+                  vectorType.getBaseDimSize(1) > 16)))
       return rewriter.notifyMatchFailure(writeOp,
                                          kMatchFailureUnsupportedMaskOp);
 
@@ -448,9 +449,10 @@ struct LegalizeMultiTileTransferWriteAsStoreLoop
 
     // Get SME tile and slice types.
     auto smeTileType = getSMETileTypeForElement(vectorType.getElementType());
-    auto minTileSlices = smeTileType.getDimSize(0);
+    auto minTileSlices = smeTileType.getBaseDimSize(0);
     VectorType sliceMaskType =
-        VectorType::get(minTileSlices, rewriter.getI1Type(), true);
+        VectorType::get(/*fixed size=*/ShapedType::kDynamic,
+                        rewriter.getI1Type(), minTileSlices);
 
     // Create loop over all tile slices.
     auto lowerBound = rewriter.create<arith::ConstantIndexOp>(loc, 0);
@@ -583,9 +585,10 @@ struct FoldExtractFromVectorOfSMELikeCreateMasks
 /// A vector type where no fixed dimension comes after a scalable dimension.
 bool isLegalVectorType(VectorType vType) {
   bool seenFixedDim = false;
-  for (bool scalableFlag : llvm::reverse(vType.getScalableDims())) {
-    seenFixedDim |= !scalableFlag;
-    if (seenFixedDim && scalableFlag)
+  for (int64_t scalableFlag : llvm::reverse(vType.getScalableDims())) {
+    bool isScalable = (scalableFlag != ShapedType::kDynamic);
+    seenFixedDim |= !isScalable;
+    if (seenFixedDim && isScalable)
       return false;
   }
   return true;
@@ -665,9 +668,11 @@ struct LiftIllegalVectorTransposeToMemory
     auto readSizes = llvm::map_to_vector(
         llvm::zip_equal(readType.getShape(), readType.getScalableDims()),
         [&](auto dim) -> Value {
-          auto [size, isScalable] = dim;
-          auto dimSize = rewriter.create<arith::ConstantIndexOp>(loc, size);
-          if (!isScalable)
+          auto [fixedDim, scalableDim] = dim;
+          auto baseDim =
+              (scalableDim == ShapedType::kDynamic) ? fixedDim : scalableDim;
+          auto dimSize = rewriter.create<arith::ConstantIndexOp>(loc, baseDim);
+          if (scalableDim == ShapedType::kDynamic)
             return dimSize;
           auto vscale = rewriter.create<vector::VectorScaleOp>(loc);
           return rewriter.create<arith::MulIOp>(loc, vscale, dimSize);
@@ -755,7 +760,7 @@ struct ConvertIllegalShapeCastOpsToTransposes
 
     // Note: If we know that `sourceType` is an illegal vector type (and 2D)
     // then dim 0 is scalable and dim 1 is fixed.
-    if (sourceType.getRank() != 2 || sourceType.getDimSize(1) != 1)
+    if (sourceType.getRank() != 2 || sourceType.getBaseDimSize(1) != 1)
       return rewriter.notifyMatchFailure(
           shapeCastOp, "expected source to be a 2D scalable vector with a "
                        "trailing unit dim");
@@ -835,8 +840,8 @@ struct LowerIllegalTransposeStoreViaZA
     auto smeTileType = getSMETileTypeForElement(resultType.getElementType());
     VectorType smeSliceType = VectorType::Builder(smeTileType).dropDim(0);
 
-    if (sourceType.getDimSize(0) <= 1 ||
-        sourceType.getDimSize(1) % smeSliceType.getDimSize(0) != 0)
+    if (sourceType.getBaseDimSize(0) <= 1 ||
+        sourceType.getBaseDimSize(1) % smeSliceType.getBaseDimSize(0) != 0)
       return rewriter.notifyMatchFailure(writeOp, "unsupported source shape");
 
     auto loc = writeOp.getLoc();
@@ -850,7 +855,7 @@ struct LowerIllegalTransposeStoreViaZA
     Value undefTile = rewriter.create<arm_sme::GetTileOp>(loc, smeTileType);
     Value destTensorOrMemref = writeOp.getSource();
     auto numSlicesPerTile =
-        std::min(sourceType.getDimSize(0), smeTileType.getDimSize(0));
+        std::min(sourceType.getBaseDimSize(0), smeTileType.getBaseDimSize(0));
     auto numSlices =
         rewriter.create<arith::ConstantIndexOp>(loc, numSlicesPerTile);
     for (auto [index, smeTile] : llvm::enumerate(
@@ -887,7 +892,7 @@ struct LowerIllegalTransposeStoreViaZA
                                                   transposedCol);
         maskCols = rewriter.create<index::MinSOp>(loc, maskCols, numSlices);
       } else {
-        maskRows = createVscaleMultiple(smeTileType.getDimSize(0));
+        maskRows = createVscaleMultiple(smeTileType.getBaseDimSize(0));
         maskCols = numSlices;
       }
       auto subMask = rewriter.create<vector::CreateMaskOp>(

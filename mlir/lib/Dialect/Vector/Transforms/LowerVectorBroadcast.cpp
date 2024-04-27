@@ -137,7 +137,7 @@ public:
         result = rewriter.create<vector::InsertOp>(loc, bcst, result, d);
     } else {
       // Stetch not at start.
-      if (dstType.getScalableDims()[0]) {
+      if (dstType.getScalableDims()[0] != ShapedType::kDynamic) {
         // TODO: For scalable vectors we should emit an scf.for loop.
         return failure();
       }

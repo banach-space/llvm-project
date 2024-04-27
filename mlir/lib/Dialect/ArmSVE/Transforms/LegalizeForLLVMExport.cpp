@@ -109,17 +109,19 @@ struct SvboolConversionOpLowering : public ConvertOpToLLVMPattern<Op> {
     // dimension. So this creates tile shape where all leading dimensions are 1,
     // and the trailing dimension step is the size of the dimension.
     SmallVector<int64_t> tileShape(sourceType.getRank(), 1);
-    tileShape.back() = sourceType.getShape().back();
+    auto srcBaseShape = sourceType.getBaseShape();
+    tileShape.back() = srcBaseShape.back();
 
     // Iterate over all scalable mask/predicate slices of the source vector.
     for (SmallVector<int64_t> index :
-         StaticTileOffsetRange(sourceType.getShape(), tileShape)) {
+         StaticTileOffsetRange(srcBaseShape, tileShape)) {
       auto extractOrInsertPosition = ArrayRef(index).drop_back();
       auto sourceVector = rewriter.create<vector::ExtractOp>(
           loc, source, extractOrInsertPosition);
+      auto resShapeBase = resultType.getBaseShape();
       VectorType convertedType =
           VectorType::Builder(llvm::cast<VectorType>(sourceVector.getType()))
-              .setDim(0, resultType.getShape().back());
+              .setScalableDim(0, resShapeBase.back());
       auto convertedVector =
           rewriter.create<IntrOp>(loc, TypeRange{convertedType}, sourceVector);
       result = rewriter.create<vector::InsertOp>(loc, convertedVector, result,
@@ -148,7 +150,9 @@ struct PselOpLowering : public ConvertOpToLLVMPattern<PselOp> {
   LogicalResult
   matchAndRewrite(PselOp pselOp, PselOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto svboolType = VectorType::get(16, rewriter.getI1Type(), true);
+    auto svboolType =
+        VectorType::get(/*fixed-width size=*/ShapedType::kDynamic,
+                        rewriter.getI1Type(), /*scalable size = */ 16);
     auto loc = pselOp.getLoc();
     auto svboolP1 = rewriter.create<ConvertToSvboolIntrOp>(loc, svboolType,
                                                            adaptor.getP1());
@@ -182,7 +186,7 @@ struct CreateMaskOpLowering
       return rewriter.notifyMatchFailure(createMaskOp, "not 1-D and scalable");
 
     // TODO: Support masks which are multiples of SVE predicates.
-    auto maskBaseSize = maskType.getDimSize(0);
+    auto maskBaseSize = maskType.getBaseDimSize(0);
     if (maskBaseSize < 2 || maskBaseSize > 16 ||
         !llvm::isPowerOf2_32(uint32_t(maskBaseSize)))
       return rewriter.notifyMatchFailure(createMaskOp,

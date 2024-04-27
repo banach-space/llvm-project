@@ -35,7 +35,9 @@ bool isValidSMETileVectorType(VectorType vType) {
     return false;
 
   unsigned minNumElts = getSMETileSliceMinNumElts(elemType);
-  if (vType.getShape() != ArrayRef<int64_t>({minNumElts, minNumElts}))
+  SmallVector<int64_t> baseShape = vType.getBaseShape();
+  if (ArrayRef<int64_t>(baseShape) !=
+      ArrayRef<int64_t>({minNumElts, minNumElts}))
     return false;
 
   return true;
@@ -78,7 +80,7 @@ scf::ForOp createLoopOverTileSlices(
   OpBuilder::InsertionGuard g(rewriter);
   auto step = rewriter.create<arith::ConstantIndexOp>(loc, 1);
   auto minTileSlices = rewriter.create<arith::ConstantIndexOp>(
-      loc, llvm::cast<VectorType>(initTile.getType()).getDimSize(0));
+      loc, llvm::cast<VectorType>(initTile.getType()).getBaseDimSize(0));
   auto vscale =
       rewriter.create<vector::VectorScaleOp>(loc, rewriter.getIndexType());
   auto lowerBound = rewriter.create<arith::ConstantIndexOp>(loc, 0);
@@ -104,8 +106,8 @@ bool isMultipleOfSMETileVectorType(VectorType vType) {
 
   unsigned minNumElts = getSMETileSliceMinNumElts(elementType);
 
-  int64_t vectorRows = vType.getDimSize(0);
-  int64_t vectorCols = vType.getDimSize(1);
+  int64_t vectorRows = vType.getBaseDimSize(0);
+  int64_t vectorCols = vType.getBaseDimSize(1);
 
   return (vectorRows > minNumElts || vectorCols > minNumElts) &&
          vectorRows % minNumElts == 0 && vectorCols % minNumElts == 0;
@@ -113,7 +115,8 @@ bool isMultipleOfSMETileVectorType(VectorType vType) {
 
 VectorType getSMETileTypeForElement(Type elementType) {
   unsigned minNumElts = getSMETileSliceMinNumElts(elementType);
-  return VectorType::get({minNumElts, minNumElts}, elementType, {true, true});
+  return VectorType::get({ShapedType::kDynamic, ShapedType::kDynamic},
+                         elementType, {minNumElts, minNumElts});
 }
 
 void eraseTriviallyDeadTileOps(IRRewriter &rewriter,

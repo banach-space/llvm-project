@@ -116,9 +116,13 @@ public:
 static void incIdx(llvm::MutableArrayRef<int64_t> idx, VectorType tp,
                    int dimIdx, int initialStep = 1) {
   int step = initialStep;
+  auto baseShape = tp.getBaseShape();
   for (int d = dimIdx; d >= 0; d--) {
     idx[d] += step;
-    if (idx[d] >= tp.getDimSize(d)) {
+    //------------------------------------------------------------
+    // TODO: Use some nicer access hook
+    //------------------------------------------------------------
+    if (idx[d] >= baseShape[d]) {
       idx[d] = 0;
       step = 1;
     } else {
@@ -261,19 +265,20 @@ public:
     // The sizes of the trailing dimension of the source and result vectors, the
     // size of subvector to move, and the number of elements in the vectors.
     // These are "min" sizes as they are the size when vscale == 1.
-    auto minSourceTrailingSize = sourceVectorType.getShape().back();
-    auto minResultTrailingSize = resultVectorType.getShape().back();
+    auto minSourceTrailingSize = sourceVectorType.getBaseShape().back();
+    auto minResultTrailingSize = resultVectorType.getBaseShape().back();
     auto minExtractionSize =
         std::min(minSourceTrailingSize, minResultTrailingSize);
     int64_t minNumElts = 1;
-    for (auto size : sourceVectorType.getShape())
+    for (auto size : sourceVectorType.getBaseShape())
       minNumElts *= size;
 
     // The subvector type to move from the source to the result. Note that this
     // is a scalable vector. This rewrite will generate code in terms of the
     // "min" size (vscale == 1 case), that scales to any vscale.
-    auto extractionVectorType = VectorType::get(
-        {minExtractionSize}, sourceVectorType.getElementType(), {true});
+    auto extractionVectorType =
+        VectorType::get({ShapedType::kDynamic},
+                        sourceVectorType.getElementType(), {minExtractionSize});
 
     Value result = rewriter.create<arith::ConstantOp>(
         loc, resultVectorType, rewriter.getZeroAttr(resultVectorType));
@@ -344,7 +349,8 @@ public:
 
   static bool isTrailingDimScalable(VectorType type) {
     return type.getRank() >= 1 && type.getScalableDims().back() &&
-           !llvm::is_contained(type.getScalableDims().drop_back(), true);
+           !llvm::is_contained(type.getShape().drop_back(),
+                               ShapedType::kDynamic);
   }
 };
 

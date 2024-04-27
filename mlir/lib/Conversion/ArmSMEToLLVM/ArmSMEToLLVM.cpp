@@ -339,8 +339,8 @@ struct ConvertArmSMESpillsAndFillsToLLVM : public ConvertToLLVMPattern {
                         IntegerAttr tileId) const {
     RewriterBase::InsertionGuard guard(rewriter);
     // Create an scf.for over all tile slices.
-    auto minNumElts =
-        rewriter.create<arith::ConstantIndexOp>(loc, sliceType.getDimSize(0));
+    auto minNumElts = rewriter.create<arith::ConstantIndexOp>(
+        loc, sliceType.getBaseDimSize(0));
     auto lowerBound = rewriter.create<arith::ConstantIndexOp>(loc, 0);
     auto upperBound = rewriter.create<arith::MulIOp>(
         loc, minNumElts, rewriter.create<vector::VectorScaleOp>(loc));
@@ -601,8 +601,8 @@ struct InsertTileSliceConversion
     auto one = rewriter.create<arith::ConstantOp>(
         loc, rewriter.getI1Type(),
         rewriter.getIntegerAttr(rewriter.getI1Type(), 1));
-    auto predTy = VectorType::get(tileType.getShape()[0], rewriter.getI1Type(),
-                                  /*scalableDims=*/{true});
+    auto predTy = VectorType::get({ShapedType::kDynamic}, rewriter.getI1Type(),
+                                  tileType.getBaseDimSize(0));
     auto allActiveMask = rewriter.create<vector::SplatOp>(loc, predTy, one);
 
     // Create 'arm_sme.intr.write.(horiz|vert)' to write vector to tile slice.
@@ -725,8 +725,8 @@ struct OuterProductOpConversion
 
       unsigned minNumElts = arm_sme::MinStreamingVectorLengthInBits /
                             vectorType.getElementTypeBitWidth();
-      return vectorType.getShape() ==
-             ArrayRef<int64_t>({minNumElts, minNumElts});
+      return vectorType.getBaseShape() ==
+             SmallVector<int64_t>({minNumElts, minNumElts});
     };
 
     // TODO: Support CombiningKind::Sub for outer products.

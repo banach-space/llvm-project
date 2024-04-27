@@ -541,6 +541,14 @@ ParseResult TensorLiteralParser::parse(bool allowHex) {
   return parseElement();
 }
 
+/// Return true if `Values` is a splat, i.e. contains only one value (splat, in
+/// this context, means just that - exactly one value that could be used to
+/// initialised e.g. a Vector or a Tensor).
+template <typename Values>
+static bool isSplat(const Values &values) {
+  return (values.size() == 1);
+}
+
 /// Build a dense attribute instance with the parsed elements and the given
 /// shaped type.
 DenseElementsAttr TensorLiteralParser::getAttr(SMLoc loc, ShapedType type) {
@@ -554,13 +562,30 @@ DenseElementsAttr TensorLiteralParser::getAttr(SMLoc loc, ShapedType type) {
   // Check that the parsed storage size has the same number of elements to the
   // type, or is a known splat.
   if (!shape.empty() && getShape() != type.getShape()) {
-    p.emitError(loc) << "inferred shape of elements literal ([" << getShape()
-                     << "]) does not match type ([" << type.getShape() << "])";
-    return nullptr;
+    // ------------------------------------------------------------------------
+    // NEW-SV: Treat 1-element attributes as splats, but only allow them for
+    // vectors and static shapes.
+    // ------------------------------------------------------------------------
+    if (getShape().size() != 1 ||
+        !ShapedType::isDynamicShape(type.getShape())) {
+      p.emitError(loc) << "inferred shape of elements literal ([" << getShape()
+                       << "]) does not match newType ([" << type.getShape()
+                       << "])";
+      return nullptr;
+    }
+    // It's a splat and the output is a dynamic shape - make sure it's a vector
+    // (rather than e.g. a Tensor and/or MemRef)
+    if (!isa<VectorType>(type)) {
+      p.emitError(loc)
+          << "splats are only allowed for static shapes and vectors, but got: "
+          << type;
+      return nullptr;
+    }
   }
 
   // Handle the case where no elements were parsed.
-  if (!hexStorage && storage.empty() && type.getNumElements()) {
+  if (!hexStorage && storage.empty() &&
+      (ShapedType::isDynamicShape(type.getShape()) || type.getNumElements())) {
     p.emitError(loc) << "parsed zero elements, but type (" << type
                      << ") expected at least 1";
     return nullptr;
@@ -585,6 +610,16 @@ DenseElementsAttr TensorLiteralParser::getAttr(SMLoc loc, ShapedType type) {
           intValues.size() / 2);
       return DenseElementsAttr::get(type, complexData);
     }
+    // ------------------------------------------------------------------------
+    // NEW-SV: For scalable vectors (i.e. dynamic shapes), only splats are
+    // allowed.
+    // ------------------------------------------------------------------------
+    if (ShapedType::isDynamicShape(type.getShape()) && !isSplat(intValues)) {
+      p.emitError(loc)
+          << "'arith.constant' op intializing scalable vectors with elements "
+             "attribute is not supported unless it's a vector splat";
+      return nullptr;
+    }
     return DenseElementsAttr::get(type, intValues);
   }
   // Handle floating point types.
@@ -598,6 +633,16 @@ DenseElementsAttr TensorLiteralParser::getAttr(SMLoc loc, ShapedType type) {
           reinterpret_cast<std::complex<APFloat> *>(floatValues.data()),
           floatValues.size() / 2);
       return DenseElementsAttr::get(type, complexData);
+    }
+    // ------------------------------------------------------------------------
+    // NEW-SV: For scalable vectors (i.e. dynamic shapes), only splats are
+    // allowed.
+    // ------------------------------------------------------------------------
+    if (ShapedType::isDynamicShape(type.getShape()) && !isSplat(floatValues)) {
+      p.emitError(loc)
+          << "'arith.constant' op intializing scalable vectors with elements "
+             "attribute is not supported unless it's a vector splat";
+      return nullptr;
     }
     return DenseElementsAttr::get(type, floatValues);
   }
@@ -1042,7 +1087,7 @@ Attribute Parser::parseDenseResourceElementsAttr(Type attrType) {
 ///
 ///   elements-literal-type ::= vector-type | ranked-tensor-type
 ///
-/// This method also checks the type has static shape.
+/// This method also checks the type has static shape or is a vector.
 ShapedType Parser::parseElementsLiteralType(Type type) {
   // If the user didn't provide a type, parse the colon type for the literal.
   if (!type) {
@@ -1058,7 +1103,11 @@ ShapedType Parser::parseElementsLiteralType(Type type) {
     return nullptr;
   }
 
-  if (!sType.hasStaticShape())
+  // --------------------------------------------------------------
+  // NEW-SV: Allow splats of scalable vectors (which are dynamic shapes)
+  // TODO: Update the assert message
+  // --------------------------------------------------------------
+  if (!sType.hasStaticShape() && !isa<VectorType>(sType))
     return (emitError("elements literal type must have static shape"), nullptr);
 
   return sType;

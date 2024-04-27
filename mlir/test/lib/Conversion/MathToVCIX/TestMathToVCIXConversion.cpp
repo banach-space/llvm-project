@@ -21,7 +21,7 @@ namespace {
 
 /// Return number of extracts required to make input VectorType \vt legal and
 /// also return thatlegal vector type.
-/// For fixed vectors nothing special is needed. Scalable vectors are legalizes
+/// For fixed vectors nothing special is needed. Scalable vectors are legalized
 /// according to LLVM's encoding:
 /// https://lists.llvm.org/pipermail/llvm-dev/2020-October/145850.html
 static std::pair<unsigned, VectorType> legalizeVectorType(const Type &type) {
@@ -44,11 +44,12 @@ static std::pair<unsigned, VectorType> legalizeVectorType(const Type &type) {
   else
     return {0, nullptr};
 
-  unsigned eltCount = vt.getShape()[0];
+  unsigned eltCount = vt.getBaseDimSize(0);
   const unsigned lmul = eltCount * sew / 64;
 
   unsigned n = lmul > 8 ? llvm::Log2_32(lmul) - 2 : 1;
-  return {n, VectorType::get({eltCount >> (n - 1)}, eltTy, {true})};
+  return {n, VectorType::get(/*fixed sizes = */ {ShapedType::kDynamic}, eltTy,
+                             /*scalable sizes =*/{eltCount >> (n - 1)})};
 }
 
 /// Replace math.cos(v) operation with vcix.v.iv(v).
@@ -76,7 +77,7 @@ struct MathCosToVCIX final : OpRewritePattern<math::CosOp> {
       res = rewriter.create<vcix::BinaryImmOp>(loc, legalType, opcodeAttr, vec,
                                                immAttr, rvl);
     } else {
-      const unsigned eltCount = legalType.getShape()[0];
+      const unsigned eltCount = legalType.getBaseDimSize(0);
       Type eltTy = legalType.getElementType();
       Value zero = rewriter.create<arith::ConstantOp>(
           loc, eltTy, rewriter.getZeroAttr(eltTy));
@@ -119,7 +120,7 @@ struct MathSinToVCIX final : OpRewritePattern<math::SinOp> {
       res = rewriter.create<vcix::BinaryOp>(loc, legalType, opcodeAttr, vec,
                                             vec, rvl);
     } else {
-      const unsigned eltCount = legalType.getShape()[0];
+      const unsigned eltCount = legalType.getBaseDimSize(0);
       Type eltTy = legalType.getElementType();
       Value zero = rewriter.create<arith::ConstantOp>(
           loc, eltTy, rewriter.getZeroAttr(eltTy));
@@ -165,7 +166,7 @@ struct MathTanToVCIX final : OpRewritePattern<math::TanOp> {
       res = rewriter.create<vcix::BinaryOp>(loc, legalType, opcodeAttr, vec,
                                             zero, rvl);
     } else {
-      const unsigned eltCount = legalType.getShape()[0];
+      const unsigned eltCount = legalType.getBaseDimSize(0);
       res = rewriter.create<vector::BroadcastOp>(loc, opType, zero /*dummy*/);
       for (unsigned i = 0; i < n; ++i) {
         Value extracted = rewriter.create<vector::ScalableExtractOp>(
@@ -207,7 +208,7 @@ struct MathLogToVCIX final : OpRewritePattern<math::LogOp> {
       res = rewriter.create<vcix::BinaryOp>(loc, legalType, opcodeAttr, vec,
                                             zeroInt, rvl);
     } else {
-      const unsigned eltCount = legalType.getShape()[0];
+      const unsigned eltCount = legalType.getBaseDimSize(0);
       Type eltTy = legalType.getElementType();
       Value zero = rewriter.create<arith::ConstantOp>(
           loc, eltTy, rewriter.getZeroAttr(eltTy));

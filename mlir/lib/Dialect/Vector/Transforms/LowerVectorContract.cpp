@@ -97,7 +97,7 @@ static Value reshapeLoad(Location loc, Value val, VectorType type,
   VectorType resType = VectorType::Builder(type).dropDim(index);
   Value result = rewriter.create<arith::ConstantOp>(
       loc, resType, rewriter.getZeroAttr(resType));
-  for (int64_t d = 0, e = resType.getDimSize(0); d < e; d++) {
+  for (int64_t d = 0, e = resType.getBaseDimSize(0); d < e; d++) {
     Value ext = rewriter.create<vector::ExtractOp>(loc, val, d);
     Value load = reshapeLoad(loc, ext, vType, index - 1, pos, rewriter);
     result = rewriter.create<vector::InsertOp>(loc, load, result, d);
@@ -119,7 +119,7 @@ static Value reshapeStore(Location loc, Value val, Value result,
 
   // Unroll leading dimensions.
   VectorType vType = VectorType::Builder(type).dropDim(0);
-  for (int64_t d = 0, e = type.getDimSize(0); d < e; d++) {
+  for (int64_t d = 0, e = type.getBaseDimSize(0); d < e; d++) {
     Value ext = rewriter.create<vector::ExtractOp>(loc, result, d);
     Value ins = rewriter.create<vector::ExtractOp>(loc, val, d);
     Value sto = reshapeStore(loc, ins, ext, vType, index - 1, pos, rewriter);
@@ -459,9 +459,9 @@ struct UnrolledOuterProductGenerator
   std::optional<int64_t> getReductionSize(VectorType vecType,
                                           int64_t reductionDim) {
     // Cannot unroll scalable dimension.
-    if (vecType.getScalableDims()[reductionDim])
+    if (vecType.isScalableDim(reductionDim))
       return std::nullopt;
-    int64_t reductionSize = vecType.getDimSize(reductionDim);
+    int64_t reductionSize = vecType.getBaseDimSize(reductionDim);
     assert(reductionSize > 0 &&
            "Reduction dim must be a known static size to allow unrolling");
     return reductionSize;
@@ -751,8 +751,8 @@ FailureOr<Value> ContractionOpToDotLowering::matchAndRewriteMaskableOp(
          "Expected dst type of rank 1 or 2");
 
   unsigned rank = dstType.getRank();
-  unsigned dstRows = dstType.getShape()[0];
-  unsigned dstColumns = rank == 1 ? 1 : dstType.getShape()[1];
+  unsigned dstRows = dstType.getBaseDimSize(0);
+  unsigned dstColumns = rank == 1 ? 1 : dstType.getBaseDimSize(1);
 
   // ExtractOp does not allow dynamic indexing, we must unroll explicitly.
   Value res = rewriter.create<arith::ConstantOp>(loc, dstType,
@@ -810,8 +810,8 @@ struct ContractOpToElementwise
         vector::VectorContractLowering::ParallelArith)
       return failure();
 
-    ArrayRef<int64_t> lhsShape = contractOp.getLhsType().getShape();
-    ArrayRef<int64_t> rhsShape = contractOp.getRhsType().getShape();
+    SmallVector<int64_t> lhsShape = contractOp.getLhsType().getBaseShape();
+    SmallVector<int64_t> rhsShape = contractOp.getRhsType().getBaseShape();
     AffineMap lhsMap = contractOp.getIndexingMapsArray()[0];
     AffineMap rhsMap = contractOp.getIndexingMapsArray()[1];
     SmallVector<int64_t> lhsReductionDims =
@@ -851,7 +851,7 @@ struct ContractOpToElementwise
       } else {
         // If the parallel dimension doesn't exist we will have to broadcast it.
         lhsDims.push_back(
-            cast<VectorType>(contractOp.getResultType()).getDimSize(i));
+            cast<VectorType>(contractOp.getResultType()).getBaseDimSize(i));
         lhsTranspose.push_back(lhsDims.size() - 1);
       }
       std::optional<unsigned> rhsDim =
@@ -861,7 +861,7 @@ struct ContractOpToElementwise
       } else {
         // If the parallel dimension doesn't exist we will have to broadcast it.
         rhsDims.push_back(
-            cast<VectorType>(contractOp.getResultType()).getDimSize(i));
+            cast<VectorType>(contractOp.getResultType()).getBaseDimSize(i));
         rhsTranspose.push_back(rhsDims.size() - 1);
       }
     }
@@ -1046,20 +1046,20 @@ FailureOr<Value> ContractionOpLowering::lowerParallel(PatternRewriter &rewriter,
         diag << "expected lhsIndex=" << lhsIndex << " and rhsIndex=" << rhsIndex
              << " to map to the same dimension";
       });
-    if (lhsType.getScalableDims()[lhsIndex])
+    if (lhsType.isScalableDim(lhsIndex))
       return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
         diag << "Unrolling scalable dimension (lhsIndex=" << lhsIndex
              << ") is not supported yet";
       });
-    dimSize = lhsType.getDimSize(lhsIndex);
+    dimSize = lhsType.getBaseDimSize(lhsIndex);
   } else if (rhsIndex >= 0) {
     iterIndex = iMap[1].getDimPosition(rhsIndex);
-    if (rhsType.getScalableDims()[rhsIndex])
+    if (rhsType.isScalableDim(rhsIndex))
       return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
         diag << "Unrolling scalable dimension (rhsIndex=" << rhsIndex
              << ") is not supported yet";
       });
-    dimSize = rhsType.getDimSize(rhsIndex);
+    dimSize = rhsType.getBaseDimSize(rhsIndex);
   }
   if (iterIndex < 0)
     return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
@@ -1138,8 +1138,8 @@ FailureOr<Value> ContractionOpLowering::lowerReduction(
     });
   int64_t lhsIndex = *lookupLhs;
   int64_t rhsIndex = *lookupRhs;
-  int64_t dimSize = lhsType.getDimSize(lhsIndex);
-  if (dimSize != rhsType.getDimSize(rhsIndex))
+  int64_t dimSize = lhsType.getBaseDimSize(lhsIndex);
+  if (dimSize != rhsType.getBaseDimSize(rhsIndex))
     return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
       diag << "expect LHS dimension " << lhsIndex
            << " to have the same size as RHS dimension " << rhsIndex;
@@ -1244,7 +1244,7 @@ public:
 
     Value result = rewriter.create<arith::ConstantOp>(
         loc, resType, rewriter.getZeroAttr(resType));
-    for (int64_t d = 0, e = resType.getDimSize(0); d < e; ++d) {
+    for (int64_t d = 0, e = resType.getBaseDimSize(0); d < e; ++d) {
       Value x = rewriter.create<vector::ExtractOp>(loc, op.getLhs(), d);
       Value a = rewriter.create<vector::BroadcastOp>(loc, rhsType, x);
       Value r = nullptr;
@@ -1344,9 +1344,9 @@ FailureOr<Value> ContractionOpToMatmulOpLowering::matchAndRewriteMaskableOp(
   // At this point lhs and rhs are in row-major.
   VectorType lhsType = cast<VectorType>(lhs.getType());
   VectorType rhsType = cast<VectorType>(rhs.getType());
-  int64_t lhsRows = lhsType.getDimSize(0);
-  int64_t lhsColumns = lhsType.getDimSize(1);
-  int64_t rhsColumns = rhsType.getDimSize(1);
+  int64_t lhsRows = lhsType.getBaseDimSize(0);
+  int64_t lhsColumns = lhsType.getBaseDimSize(1);
+  int64_t rhsColumns = rhsType.getBaseDimSize(1);
 
   Type flattenedLHSType =
       VectorType::get(lhsType.getNumElements(), lhsType.getElementType());

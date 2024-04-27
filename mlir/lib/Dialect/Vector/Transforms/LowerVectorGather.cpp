@@ -67,7 +67,7 @@ struct FlattenGather : OpRewritePattern<vector::GatherOp> {
 
     // Unrolling doesn't take vscale into account. Pattern is disabled for
     // vectors with leading scalable dim(s).
-    if (resultTy.getScalableDims().front())
+    if (resultTy.getScalableDims().front() != ShapedType::kDynamic)
       return rewriter.notifyMatchFailure(op, "cannot unroll scalable dim");
 
     Location loc = op.getLoc();
@@ -223,7 +223,10 @@ struct Gather1DToConditionalLoads : OpRewritePattern<vector::GatherOp> {
     Value result = op.getPassThru();
 
     // Emit a conditional access for each vector element.
-    for (int64_t i = 0, e = resultTy.getNumElements(); i < e; ++i) {
+    // -----------------------------------------------------------------------
+    // TODO: Double-check that this is both safe and correct
+    // -----------------------------------------------------------------------
+    for (int64_t i = 0, e = resultTy.getVectorNumElements(); i < e; ++i) {
       int64_t thisIdx[1] = {i};
       Value condition =
           rewriter.create<vector::ExtractOp>(loc, condMask, thisIdx);

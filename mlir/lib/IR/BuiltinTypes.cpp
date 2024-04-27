@@ -237,16 +237,31 @@ bool VectorType::isValidElementType(Type t) {
 
 LogicalResult VectorType::verify(function_ref<InFlightDiagnostic()> emitError,
                                  ArrayRef<int64_t> shape, Type elementType,
-                                 ArrayRef<bool> scalableDims) {
+                                 ArrayRef<int64_t> scalableDims) {
   if (!isValidElementType(elementType))
     return emitError()
            << "vector elements must be int/index/float type but got "
            << elementType;
 
-  if (any_of(shape, [](int64_t i) { return i <= 0; }))
+  // kDynamic signifies that the corresponding dim is scalable
+  if (any_of(shape,
+             [](int64_t i) { return (i <= 0) && (i != ShapedType::kDynamic); }))
     return emitError()
            << "vector types must have positive constant sizes but got "
            << shape;
+  // TODO: What should we use in scalableDims? 0 or kDynamic?
+  if (any_of(scalableDims,
+             [](int64_t i) { return (i < 0) && (i != ShapedType::kDynamic); }))
+    return emitError()
+           << "vector types must have positive constant sizes but got "
+           << scalableDims;
+
+  for (auto shapePair : llvm::zip(scalableDims, shape)) {
+    if (std::get<0>(shapePair) != ShapedType::kDynamic &&
+        std::get<1>(shapePair) != ShapedType::kDynamic)
+      return emitError() << "vector dimension " << std::get<0>(shapePair)
+                         << " both fixed and scalable " << shape;
+  }
 
   if (scalableDims.size() != shape.size())
     return emitError() << "number of dims must match, got "

@@ -160,7 +160,7 @@ public:
     }
 
     auto srcRank = multiReductionOp.getSourceVectorType().getRank();
-    auto srcShape = multiReductionOp.getSourceVectorType().getShape();
+    auto srcShape = multiReductionOp.getSourceVectorType().getBaseShape();
     auto srcScalableDims =
         multiReductionOp.getSourceVectorType().getScalableDims();
     auto loc = multiReductionOp.getLoc();
@@ -171,7 +171,9 @@ public:
 
     // Allow only 1 scalable dimensions. Otherwise we could end-up with e.g.
     // `vscale * vscale` that's currently not modelled.
-    if (llvm::count(srcScalableDims, true) > 1)
+    if (llvm::count_if(srcScalableDims, [](int64_t dim) {
+          return dim != ShapedType::kDynamic;
+        }) > 1)
       return failure();
 
     // If already rank-2 ["parallel", "reduce"] or ["reduce", "parallel"] bail.
@@ -181,20 +183,31 @@ public:
 
     // 1. Separate reduction and parallel dims.
     SmallVector<int64_t, 4> parallelDims, parallelShapes;
-    SmallVector<bool, 4> parallelScalableDims;
+    SmallVector<int64_t, 4> parallelScalableDims, reductionScalableDims;
     SmallVector<int64_t, 4> reductionDims, reductionShapes;
     bool isReductionDimScalable = false;
+    bool isParallelDimScalable = false;
     for (const auto &it : llvm::enumerate(reductionMask)) {
       int64_t i = it.index();
       bool isReduction = it.value();
       if (isReduction) {
         reductionDims.push_back(i);
+        // --------------------------------------------------------------
+        // TODO: Do we need to worry about keeping reductionScalableDims
+        // seperate? Things seem to work for now
+        // --------------------------------------------------------------
         reductionShapes.push_back(srcShape[i]);
-        isReductionDimScalable |= srcScalableDims[i];
+        isReductionDimScalable = (srcScalableDims[i] != ShapedType::kDynamic);
       } else {
         parallelDims.push_back(i);
-        parallelShapes.push_back(srcShape[i]);
-        parallelScalableDims.push_back(srcScalableDims[i]);
+        isParallelDimScalable = (srcScalableDims[i] != ShapedType::kDynamic);
+        if (isParallelDimScalable) {
+          parallelShapes.push_back(ShapedType::kDynamic);
+          parallelScalableDims.push_back(srcShape[i]);
+        } else {
+          parallelShapes.push_back(srcShape[i]);
+          parallelScalableDims.push_back(ShapedType::kDynamic);
+        }
       }
     }
 
@@ -203,8 +216,12 @@ public:
     int flattenedReductionDim = 0;
     if (!parallelShapes.empty()) {
       flattenedParallelDim = 1;
-      for (auto d : parallelShapes)
-        flattenedParallelDim *= d;
+      for (auto [idx, d] : llvm::enumerate(parallelShapes)) {
+        if (d != ShapedType::kDynamic)
+          flattenedParallelDim *= d;
+        else
+          flattenedParallelDim *= parallelScalableDims[idx];
+      }
     }
     if (!reductionShapes.empty()) {
       flattenedReductionDim = 1;
@@ -230,18 +247,27 @@ public:
     // 4. Shape cast to collapse consecutive parallel (resp. reduction dim) into
     // a single parallel (resp. reduction) dim.
     SmallVector<bool, 2> mask;
-    SmallVector<bool, 2> scalableDims;
+    SmallVector<int64_t, 2> scalableDims;
     SmallVector<int64_t, 2> vectorShape;
-    bool isParallelDimScalable = llvm::is_contained(parallelScalableDims, true);
     if (flattenedParallelDim) {
       mask.push_back(false);
-      vectorShape.push_back(flattenedParallelDim);
-      scalableDims.push_back(isParallelDimScalable);
+      if (isParallelDimScalable) {
+        vectorShape.push_back(ShapedType::kDynamic);
+        scalableDims.push_back(flattenedParallelDim);
+      } else {
+        vectorShape.push_back(flattenedParallelDim);
+        scalableDims.push_back(ShapedType::kDynamic);
+      }
     }
     if (flattenedReductionDim) {
       mask.push_back(true);
-      vectorShape.push_back(flattenedReductionDim);
-      scalableDims.push_back(isReductionDimScalable);
+      if (isReductionDimScalable) {
+        vectorShape.push_back(ShapedType::kDynamic);
+        scalableDims.push_back(flattenedReductionDim);
+      } else {
+        vectorShape.push_back(flattenedReductionDim);
+        scalableDims.push_back(ShapedType::kDynamic);
+      }
     }
     if (!useInnerDimsForReduction && vectorShape.size() == 2) {
       std::swap(mask.front(), mask.back());
@@ -268,9 +294,10 @@ public:
     Value acc = multiReductionOp.getAcc();
     if (flattenedParallelDim) {
       auto accType = VectorType::get(
-          {flattenedParallelDim},
+          {isParallelDimScalable ? ShapedType::kDynamic : flattenedParallelDim},
           multiReductionOp.getSourceVectorType().getElementType(),
-          /*scalableDims=*/{isParallelDimScalable});
+          {isParallelDimScalable ? flattenedParallelDim
+                                 : ShapedType::kDynamic});
       acc = rewriter.create<vector::ShapeCastOp>(loc, accType, acc);
     }
     // 6. Creates the flattened form of vector.multi_reduction with inner/outer
@@ -323,8 +350,8 @@ struct TwoDimMultiReductionToElementWise
       return failure();
 
     auto loc = multiReductionOp.getLoc();
-    ArrayRef<int64_t> srcShape =
-        multiReductionOp.getSourceVectorType().getShape();
+    SmallVector<int64_t> srcShape =
+        multiReductionOp.getSourceVectorType().getBaseShape();
 
     Type elementType = getElementTypeOrSelf(multiReductionOp.getDestType());
     if (!elementType.isIntOrIndexOrFloat())
@@ -374,7 +401,7 @@ struct TwoDimMultiReductionToReduction
     Value result = rewriter.create<arith::ConstantOp>(
         loc, multiReductionOp.getDestType(),
         rewriter.getZeroAttr(multiReductionOp.getDestType()));
-    int outerDim = multiReductionOp.getSourceVectorType().getShape()[0];
+    int outerDim = multiReductionOp.getSourceVectorType().getBaseDimSize(0);
 
     for (int i = 0; i < outerDim; ++i) {
       auto v = rewriter.create<vector::ExtractOp>(
@@ -436,7 +463,8 @@ struct OneDimMultiReductionToTwoDim
     auto srcShape = srcVectorType.getShape();
     auto castedType = VectorType::get(
         ArrayRef<int64_t>{1, srcShape.back()}, srcVectorType.getElementType(),
-        ArrayRef<bool>{false, srcVectorType.getScalableDims().back()});
+        ArrayRef<int64_t>{ShapedType::kDynamic,
+                          srcVectorType.getScalableDims().back()});
 
     auto accType =
         VectorType::get(ArrayRef<int64_t>{1}, srcVectorType.getElementType());
@@ -455,10 +483,11 @@ struct OneDimMultiReductionToTwoDim
     Value castMask;
     if (maskableOp.isMasked()) {
       auto maskType = llvm::cast<VectorType>(mask.getType());
-      auto castMaskType = VectorType::get(
-          ArrayRef<int64_t>{1, maskType.getShape().back()},
-          maskType.getElementType(),
-          ArrayRef<bool>{false, maskType.getScalableDims().back()});
+      auto castMaskType =
+          VectorType::get(ArrayRef<int64_t>{1, maskType.getShape().back()},
+                          maskType.getElementType(),
+                          ArrayRef<int64_t>{ShapedType::kDynamic,
+                                            maskType.getScalableDims().back()});
       castMask = rewriter.create<vector::BroadcastOp>(loc, castMaskType, mask);
     }
 

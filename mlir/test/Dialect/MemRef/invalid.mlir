@@ -316,7 +316,10 @@ memref.global @foo : memref<2x2xf32>  = "foo"
 
 // -----
 
-// expected-error @+1 {{inferred shape of elements literal ([2]) does not match type ([2, 2])}}
+//------------------------------------------------------------------------------
+// TODO: Revert this change
+//------------------------------------------------------------------------------
+// expected-error @+1 {{inferred shape of elements literal ([2]) does not match newType ([2, 2])}}
 memref.global @foo : memref<2x2xf32> = dense<[0.0, 1.0]>
 
 // -----

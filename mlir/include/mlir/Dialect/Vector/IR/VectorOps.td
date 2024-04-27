@@ -493,7 +493,14 @@ def ResultIsDoubleSourceVectorType : TypesMatchWith<
           return builder.setShape(v2xTyShape);
         }
         auto lastDim = vectorType.getRank() - 1;
-        return builder.setDim(lastDim, vectorType.getDimSize(lastDim) * 2);
+        // --------------------------------------------------------------------
+        // TODO: Replace the `if` with updated `getDimSize` (`getBaseDimSize`?)
+        // --------------------------------------------------------------------
+        if (vectorType.getDimSize(lastDim) != ShapedType::kDynamic) {
+          return builder.setDim(lastDim,  vectorType.getDimSize(lastDim) * 2);
+        } else {
+          return builder.setScalableDim(lastDim, vectorType.getScalableDims()[lastDim] * 2);
+        }
       }()
     }]>;
 
@@ -553,10 +560,17 @@ class ResultIsHalfSourceVectorType<string result> : TypesMatchWith<
       auto vectorType = ::llvm::cast<mlir::VectorType>($_self);
       ::mlir::VectorType::Builder builder(vectorType);
       auto lastDim = vectorType.getRank() - 1;
-      auto newDimSize = vectorType.getDimSize(lastDim) / 2;;
-      if (newDimSize <= 0)
-         return vectorType; // (invalid input type)
-      return builder.setDim(lastDim, newDimSize);
+      if (vectorType.getDimSize(lastDim) != ShapedType::kDynamic) {
+        auto newDimSize = vectorType.getDimSize(lastDim) / 2;
+        if (newDimSize <= 0)
+           return vectorType; // (invalid input type)
+        return builder.setDim(lastDim, newDimSize);
+      } else {
+        auto newDimSize = vectorType.getScalableDims()[lastDim] / 2;
+        if (newDimSize <= 0)
+           return vectorType; // (invalid input type)
+        return builder.setScalableDim(lastDim, newDimSize);
+      }
     }()
   }]
 >;
@@ -935,7 +949,7 @@ def Vector_ScalableInsertOp :
        AllTypesMatch<["dest", "res"]>,
        PredOpTrait<"position is a multiple of the source length.",
         CPred<
-          "(getPos() % getSourceVectorType().getNumElements()) == 0"
+         "(getPos() % getSourceVectorType().getVectorNumElements()) == 0"
         >>]>,
      Arguments<(ins VectorOfRank<[1]>:$source,
                     ScalableVectorOfRank<[1]>:$dest,
@@ -991,7 +1005,7 @@ def Vector_ScalableExtractOp :
        AllElementTypesMatch<["source", "res"]>,
        PredOpTrait<"position is a multiple of the result length.",
         CPred<
-          "(getPos() % getResultVectorType().getNumElements()) == 0"
+          "(getPos() % getResultVectorType().getVectorNumElements()) == 0"
         >>]>,
      Arguments<(ins ScalableVectorOfRank<[1]>:$source,
                     I64Attr:$pos)>,

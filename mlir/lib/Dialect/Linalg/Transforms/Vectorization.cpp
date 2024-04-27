@@ -195,9 +195,14 @@ struct VectorizationState {
   /// Returns the canonical vector shape used to vectorize the iteration space.
   ArrayRef<int64_t> getCanonicalVecShape() const { return canonicalVecShape; }
 
+  // --------------------------------------------------------------------------
+  // TODO: PROPER FIX!!!
+  // This cannot return ArrayRef<bool>!
+  // --------------------------------------------------------------------------
   /// Returns the vector dimensions that are scalable in the canonical vector
   /// shape.
-  ArrayRef<bool> getScalableVecDims() const { return scalableVecDims; }
+  ArrayRef<int64_t> getScalableVecDims() const { return scalableVecDims; }
+  // ArrayRef<bool> getScalableVecDims() const { return scalableVecDims; }
 
   /// Returns a vector type of the provided `elementType` with the canonical
   /// vector shape and the corresponding fixed/scalable dimensions bit. If
@@ -207,12 +212,12 @@ struct VectorizationState {
       Type elementType,
       std::optional<AffineMap> dimPermutation = std::nullopt) const {
     SmallVector<int64_t> vectorShape;
-    SmallVector<bool> scalableDims;
+    SmallVector<int64_t> scalableDims;
     if (dimPermutation.has_value()) {
       vectorShape =
           applyPermutationMap<int64_t>(*dimPermutation, canonicalVecShape);
       scalableDims =
-          applyPermutationMap<bool>(*dimPermutation, scalableVecDims);
+          applyPermutationMap<int64_t>(*dimPermutation, scalableVecDims);
     } else {
       vectorShape.append(canonicalVecShape.begin(), canonicalVecShape.end());
       scalableDims.append(scalableVecDims.begin(), scalableVecDims.end());
@@ -264,7 +269,7 @@ private:
 
   /// Holds the vector dimensions that are scalable in the canonical vector
   /// shape.
-  SmallVector<bool> scalableVecDims;
+  SmallVector<int64_t> scalableVecDims;
 
   /// Holds the active masks for permutations of the canonical vector iteration
   /// space.
@@ -320,15 +325,25 @@ VectorizationState::initState(RewriterBase &rewriter, LinalgOp linalgOp,
     // Get the canonical vector shape from the input vector sizes provided. This
     // path should be taken to vectorize code with dynamic shapes and when using
     // vector sizes greater than the iteration space sizes.
-    canonicalVecShape.append(inputVectorSizes.begin(), inputVectorSizes.end());
-    scalableVecDims.append(inputScalableVecDims.begin(),
-                           inputScalableVecDims.end());
+    for (auto [idx, val] : llvm::enumerate(inputVectorSizes)) {
+      // ----------------------------------------------------------------------
+      // IMPORTANT: At this _early entry_ point, scalability is expressed as
+      // bool flags! This changes further down.
+      // ----------------------------------------------------------------------
+      if (!inputScalableVecDims[idx]) {
+        canonicalVecShape.push_back(val);
+        scalableVecDims.push_back(ShapedType::kDynamic);
+      } else {
+        canonicalVecShape.push_back(ShapedType::kDynamic);
+        scalableVecDims.push_back(val);
+      }
+    }
   } else {
     // Compute the canonical vector shape from the operation shape. If there are
     // dynamic shapes, the operation won't be vectorized. We assume all the
     // vector dimensions are fixed.
     canonicalVecShape = linalgOp.getStaticLoopRanges();
-    scalableVecDims.append(linalgOp.getNumLoops(), false);
+    scalableVecDims.append(linalgOp.getNumLoops(), ShapedType::kDynamic);
   }
 
   LDBG("Canonical vector shape: ");
@@ -338,7 +353,11 @@ VectorizationState::initState(RewriterBase &rewriter, LinalgOp linalgOp,
   LLVM_DEBUG(llvm::interleaveComma(scalableVecDims, llvm::dbgs()));
   LLVM_DEBUG(llvm::dbgs() << "\n");
 
-  if (ShapedType::isDynamicShape(canonicalVecShape))
+  // --------------------------------------------------------------------------
+  // TODO: Scalable vector is also a dynamic shape!
+  // --------------------------------------------------------------------------
+  if (ShapedType::isDynamicShape(canonicalVecShape) &&
+      inputScalableVecDims.empty())
     return failure();
 
   // Initialize iteration space static sizes.
@@ -396,7 +415,7 @@ Value VectorizationState::getOrCreateMaskFor(
   SmallVector<int64_t> permutedStaticSizes =
       applyPermutationMap<int64_t>(maskingMap, iterSpaceStaticSizes);
   auto maskType = getCanonicalVecType(rewriter.getI1Type(), maskingMap);
-  auto maskShape = maskType.getShape();
+  auto maskShape = maskType.getBaseShape();
 
   LDBG("Mask shape: ");
   LLVM_DEBUG(llvm::interleaveComma(maskShape, llvm::dbgs()));
@@ -724,6 +743,12 @@ static VectorizationResult vectorizeLinalgIndex(RewriterBase &rewriter,
   ArrayRef<int64_t> targetShape = state.getCanonicalVecShape();
   auto dim = indexOp.getDim();
   // Compute a one-dimensional index vector for the index op dimension.
+  // --------------------------------------------------------------------------
+  // TODO: PROPER FIX!!!
+  // --------------------------------------------------------------------------
+  // auto indexVectorType =
+  //     VectorType::get({targetShape[dim]}, rewriter.getIndexType(),
+  //                     state.getScalableVecDims()[dim]);
   auto indexVectorType =
       VectorType::get({targetShape[dim]}, rewriter.getIndexType(),
                       state.getScalableVecDims()[dim]);
@@ -858,7 +883,7 @@ static uint64_t getTrailingNonUnitLoopDimIdx(LinalgOp linalgOp) {
 static bool isLoopInvariantIdx(LinalgOp &linalgOp, Value &val,
                                VectorType resType) {
 
-  assert(((llvm::count_if(resType.getShape(),
+  assert(((llvm::count_if(resType.getBaseShape(),
                           [](int64_t dimSize) { return dimSize > 1; }) == 1)) &&
          "n-D vectors are not yet supported");
 
@@ -918,7 +943,7 @@ static bool isLoopInvariantIdx(LinalgOp &linalgOp, Value &val,
 static bool isContiguousLoadIdx(LinalgOp &linalgOp, Value &val,
                                 bool &foundIndexOp, VectorType resType) {
 
-  assert(((llvm::count_if(resType.getShape(),
+  assert(((llvm::count_if(resType.getBaseShape(),
                           [](int64_t dimSize) { return dimSize > 1; }) == 1)) &&
          "n-D vectors are not yet supported");
 
@@ -983,7 +1008,7 @@ getTensorExtractMemoryAccessPattern(tensor::ExtractOp extractOp,
   // True for vectors that are effectively 1D, e.g. `vector<1x4x1xi32>`, false
   // otherwise.
   bool isOutput1DVector =
-      (llvm::count_if(resType.getShape(),
+      (llvm::count_if(resType.getBaseShape(),
                       [](int64_t dimSize) { return dimSize > 1; }) == 1);
   // 1. Assume that it's a gather load when reading non-1D vector.
   if (!isOutput1DVector)
@@ -3354,24 +3379,28 @@ struct Conv1DGenerator
     Type lhsEltType = lhsShapedType.getElementType();
     Type rhsEltType = rhsShapedType.getElementType();
     Type resEltType = resShapedType.getElementType();
+    int64_t cSizeActual = scalableChDim ? ShapedType::kDynamic : cSize;
+    int64_t cScalableActual = scalableChDim ? cSize : ShapedType::kDynamic;
     VectorType lhsType = VectorType::get(
         {nSize,
          // iw = ow * sw + kw *  dw - 1
          //   (i.e. 16 convolved with 3 (@stride 1 dilation 1) -> 14)
          ((wSize - 1) * strideW + 1) + ((kwSize - 1) * dilationW + 1) - 1,
-         cSize},
-        lhsEltType, /*scalableDims=*/{false, false, scalableChDim});
-    VectorType rhsType =
-        VectorType::get({kwSize, cSize}, rhsEltType,
-                        /*scalableDims=*/{false, scalableChDim});
-    VectorType resType =
-        VectorType::get({nSize, wSize, cSize}, resEltType,
-                        /*scalableDims=*/{false, false, scalableChDim});
+         cSizeActual},
+        lhsEltType, /*scalableDims=*/
+        {ShapedType::kDynamic, ShapedType::kDynamic, cScalableActual});
+    VectorType rhsType = VectorType::get(
+        {kwSize, cSizeActual}, rhsEltType,
+        /*scalableDims=*/{ShapedType::kDynamic, cScalableActual});
+    VectorType resType = VectorType::get(
+        {nSize, wSize, cSizeActual}, resEltType,
+        /*scalableDims=*/
+        {ShapedType::kDynamic, ShapedType::kDynamic, cScalableActual});
 
     // Masks the input xfer Op along the channel dim, iff the corresponding
     // scalable flag is set.
     auto maybeMaskXferOp = [&](ArrayRef<int64_t> maskShape,
-                               ArrayRef<bool> scalableDims,
+                               ArrayRef<int64_t> scalableDims,
                                Operation *opToMask) {
       if (!useMasking)
         return opToMask;

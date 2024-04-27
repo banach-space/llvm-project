@@ -108,7 +108,7 @@ func.func @test_scalable_linearize(%arg0: vector<2x[2]xf32>) -> vector<2x[2]xf32
   // BW-128:  %[[SC:.*]] = vector.shape_cast %[[ARG_0]] : vector<2x[2]xf32> to vector<[4]xf32>
   // BW-128:  %[[CST:.*]] = arith.constant dense<3.000000e+00> : vector<[4]xf32>
   // BW-0:  %[[CST:.*]] = arith.constant dense<3.000000e+00> : vector<2x[2]xf32>
-  %0 = arith.constant dense<[[3., 3.], [3., 3.]]> : vector<2x[2]xf32>
+  %0 = arith.constant dense<[3.]> : vector<2x[2]xf32>
 
   // DEFAULT: %[[SIN:.*]] = math.sin %[[SC]] : vector<[4]xf32>
   // BW-128: %[[SIN:.*]] = math.sin %[[SC]] : vector<[4]xf32>
@@ -132,7 +132,7 @@ func.func @test_scalable_linearize(%arg0: vector<2x[2]xf32>) -> vector<2x[2]xf32
 // ALL-SAME:     %[[VAL_0:.*]]: vector<[2]x[2]xf32>) -> vector<[2]x[2]xf32> {
 func.func @test_scalable_no_linearize(%arg0: vector<[2]x[2]xf32>) -> vector<[2]x[2]xf32> {
   // ALL: %[[CST:.*]] = arith.constant dense<2.000000e+00> : vector<[2]x[2]xf32>
-  %0 = arith.constant dense<[[2., 2.], [2., 2.]]> : vector<[2]x[2]xf32>
+  %0 = arith.constant dense<[2.]> : vector<[2]x[2]xf32>
 
   // ALL: %[[SIN:.*]] = math.sin %[[VAL_0]] : vector<[2]x[2]xf32>
   %1 = math.sin %arg0 : vector<[2]x[2]xf32>

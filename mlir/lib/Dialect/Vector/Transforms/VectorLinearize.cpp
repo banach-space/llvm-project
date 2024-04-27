@@ -72,7 +72,9 @@ struct LinearizeConstant final : OpConversionPattern<arith::ConstantOp> {
     auto resType =
         getTypeConverter()->convertType<VectorType>(constOp.getType());
 
-    if (resType.isScalable() && !isa<SplatElementsAttr>(constOp.getValue()))
+    if (resType.isScalable() &&
+        (llvm::cast<VectorType>(constOp.getType()).getNumScalableDims() > 1 ||
+         !isa<SplatElementsAttr>(constOp.getValue())))
       return rewriter.notifyMatchFailure(
           loc,
           "Cannot linearize a constant scalable vector that's not a splat");
@@ -355,7 +357,7 @@ struct LinearizeVectorExtract final
                                          "dynamic position is not supported.");
 
     llvm::ArrayRef<int64_t> shape = extractOp.getVector().getType().getShape();
-    int64_t size = extractOp.getVector().getType().getNumElements();
+    int64_t size = extractOp.getVector().getType().getVectorNumElements();
 
     // Compute linearized offset.
     int64_t linearizedOffset = 0;
@@ -419,14 +421,14 @@ struct LinearizeVectorInsert final
     auto srcAsVec = dyn_cast<VectorType>(srcTy);
     uint64_t srcSize = 0;
     if (srcAsVec) {
-      srcSize = srcAsVec.getNumElements();
+      srcSize = srcAsVec.getVectorNumElements();
     } else {
       return rewriter.notifyMatchFailure(insertOp,
                                          "scalars are not supported.");
     }
 
     auto dstShape = insertOp.getDestVectorType().getShape();
-    const auto dstSize = insertOp.getDestVectorType().getNumElements();
+    const auto dstSize = insertOp.getDestVectorType().getVectorNumElements();
     auto dstSizeForOffsets = dstSize;
 
     // compute linearized offset
@@ -469,8 +471,11 @@ void mlir::vector::populateVectorLinearizeTypeConversionsAndLegality(
     if (!isLinearizableVector(type))
       return type;
 
-    return VectorType::get(type.getNumElements(), type.getElementType(),
-                           type.isScalable());
+    return VectorType::get(type.isScalable() ? ShapedType::kDynamic
+                                             : type.getVectorNumElements(),
+                           type.getElementType(),
+                           !type.isScalable() ? ShapedType::kDynamic
+                                              : type.getVectorNumElements());
   });
 
   auto materializeCast = [](OpBuilder &builder, Type type, ValueRange inputs,

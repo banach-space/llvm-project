@@ -2622,10 +2622,25 @@ void AsmPrinter::Impl::printTypeImpl(Type type) {
         unsigned lastDim = vShape.size();
         unsigned dimIdx = 0;
         for (dimIdx = 0; dimIdx < lastDim; dimIdx++) {
-          if (!scalableDims.empty() && scalableDims[dimIdx])
+          // -------------------------------------------------------------------------
+          // TODO 1 - This logic will depend on whether the entry in
+          // scalableDims corresponding to fixed-width should be 0 or kDynamic.
+          // Let's settle on kDynamic, but looks like I still use 0 in some
+          // places (based on the additional failing tests when removing "!= 0"
+          // below)
+          // -------------------------------------------------------------------------
+          // -------------------------------------------------------------------------
+          // TODO 2 - Scalable dims are both optional and have default values :(
+          // -------------------------------------------------------------------------
+          if (!scalableDims.empty() && scalableDims[dimIdx] != 0 &&
+              scalableDims[dimIdx] != ShapedType::kDynamic) {
             os << '[';
-          os << vShape[dimIdx];
-          if (!scalableDims.empty() && scalableDims[dimIdx])
+            os << scalableDims[dimIdx];
+          } else {
+            os << vShape[dimIdx];
+          }
+          if (!scalableDims.empty() && (scalableDims[dimIdx] != 0) &&
+              (scalableDims[dimIdx] != ShapedType::kDynamic))
             os << ']';
           os << 'x';
         }

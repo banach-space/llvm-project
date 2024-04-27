@@ -492,6 +492,9 @@ class Rank<string name> :
 class Shape<string name> :
     StrFunc<"::llvm::cast<::mlir::ShapedType>($" # name # ".getType()).getShape()">;
 
+class ScalableShape<string name> :
+    StrFunc<"::llvm::cast<::mlir::VectorType>($" # name # ".getType()).getScalableDims()">;
+
 class ElementCount<string name> :
   StrFunc<"llvm::cast<::mlir::ShapedType>($" # name # ".getType())"
                                  ".getNumElements()">;
@@ -550,6 +553,9 @@ class AllRanksMatch<list<string> names> :
 
 class AllShapesMatch<list<string> names> :
     AllMatchSameOperatorTrait<names, Shape<"_self">.result, "shape">;
+
+class AllScalableShapesMatch<list<string> names> :
+    AllMatchSameOperatorTrait<names, ScalableShape<"_self">.result, "shape">;
 
 class AllTypesMatch<list<string> names> :
     AllMatchSameOperatorTrait<names, "$_self.getType()", "type">;

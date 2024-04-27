@@ -47,8 +47,8 @@ def IsVectorTypeWithAnyDimScalablePred
 def IsVectorTypeWithOnlyTrailingDimScalablePred : And<[
   CPred<"::llvm::isa<::mlir::VectorType>($_self)">,
   CPred<"::llvm::cast<::mlir::VectorType>($_self).getRank() > 0">,
-  CPred<"::llvm::cast<::mlir::VectorType>($_self).getScalableDims().back()">,
-  CPred<"!llvm::is_contained(::llvm::cast<::mlir::VectorType>($_self).getScalableDims().drop_back(), true)">
+  CPred<"::llvm::cast<::mlir::VectorType>($_self).getScalableDims().back() != ShapedType::kDynamic">,
+  CPred<"!llvm::is_contained(::llvm::cast<::mlir::VectorType>($_self).getShape().drop_back(), ShapedType::kDynamic)">
 ]>;
 
 // Whether a type is a VectorType and all dimensions are scalable.
@@ -516,7 +516,7 @@ class FixedVectorOfRankAndType<list<int> allowedRanks,
 class IsVectorOfLengthPred<list<int> allowedLengths> :
   And<[IsVectorTypePred,
        Or<!foreach(allowedlength, allowedLengths,
-                   CPred<[{::llvm::cast<::mlir::VectorType>($_self).getNumElements()
+                   CPred<[{::llvm::cast<::mlir::VectorType>($_self).getVectorNumElements()
                            == }]
                          # allowedlength>)>]>;
 
@@ -525,7 +525,7 @@ class IsVectorOfLengthPred<list<int> allowedLengths> :
 class IsFixedVectorOfLengthPred<list<int> allowedLengths> :
   And<[IsFixedVectorTypePred,
        Or<!foreach(allowedlength, allowedLengths,
-                   CPred<[{::llvm::cast<::mlir::VectorType>($_self).getNumElements()
+                   CPred<[{::llvm::cast<::mlir::VectorType>($_self).getVectorNumElements()
                            == }]
                          # allowedlength>)>]>;
 
@@ -534,7 +534,7 @@ class IsFixedVectorOfLengthPred<list<int> allowedLengths> :
 class IsScalableVectorOfLengthPred<list<int> allowedLengths> :
   And<[IsVectorTypeWithAnyDimScalablePred,
        Or<!foreach(allowedlength, allowedLengths,
-                   CPred<[{::llvm::cast<::mlir::VectorType>($_self).getNumElements()
+                   CPred<[{::llvm::cast<::mlir::VectorType>($_self).getVectorNumElements()
                            == }]
                          # allowedlength>)>]>;
 
@@ -566,15 +566,18 @@ class IsNthDimSizeIsOneOfPred<int n, list<int> allowedSizes>
   : And<[
       CPred<"::llvm::cast<::mlir::ShapedType>($_self).getRank() >= " # NormalizeIndex<n>.ret>,
       CPred<"::llvm::is_contained(ArrayRef<int64_t>({" # !interleave(allowedSizes, ", ") # "}), "
-        # "::llvm::cast<::mlir::ShapedType>($_self).getDimSize("
+      // -------------------------------------------------------------------
+      // TODO: This will only work for Scalable vectors!
+      // -------------------------------------------------------------------
+        # "::llvm::cast<::mlir::VectorType>($_self).getScalableDims()["
         #   !if(!lt(n, 0),
               "::llvm::cast<::mlir::ShapedType>($_self).getRank() + " # n,
               "" # n)
-        # "))">]>;
+        # "])">]>;
 
 // Whether the shape of a vector matches the given `shape` list.
 class IsVectorOfShape<list<int> shape>
-  : CPred<"::llvm::cast<::mlir::VectorType>($_self).getShape() == ArrayRef<int64_t>({" # !interleave(shape, ", ") # "})">;
+  : CPred<"ArrayRef<int64_t>(::llvm::cast<::mlir::VectorType>($_self).getBaseShape()) == ArrayRef<int64_t>({" # !interleave(shape, ", ") # "})">;
 
 // Any vector where the number of elements is from the given
 // `allowedLengths` list
