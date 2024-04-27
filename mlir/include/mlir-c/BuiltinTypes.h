@@ -284,7 +284,7 @@ MLIR_CAPI_EXPORTED MlirType mlirVectorTypeGetChecked(MlirLocation loc,
 /// type.
 MLIR_CAPI_EXPORTED MlirType mlirVectorTypeGetScalable(intptr_t rank,
                                                       const int64_t *shape,
-                                                      const bool *scalable,
+                                                      const int64_t *scalable,
                                                       MlirType elementType);
 
 /// Same as "mlirVectorTypeGetScalable" but returns a nullptr wrapping MlirType
@@ -292,7 +292,7 @@ MLIR_CAPI_EXPORTED MlirType mlirVectorTypeGetScalable(intptr_t rank,
 MLIR_CAPI_EXPORTED
 MlirType mlirVectorTypeGetScalableChecked(MlirLocation loc, intptr_t rank,
                                           const int64_t *shape,
-                                          const bool *scalable,
+                                          const int64_t *scalable,
                                           MlirType elementType);
 
 /// Checks whether the given vector type is scalable, i.e., has at least one

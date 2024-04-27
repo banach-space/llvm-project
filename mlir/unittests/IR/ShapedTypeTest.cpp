@@ -135,8 +135,9 @@ TEST(ShapedTypeTest, VectorTypeBuilder) {
   MLIRContext context;
   Type f32 = FloatType::getF32(&context);
 
-  SmallVector<int64_t> shape{2, 4, 8, 9, 1};
-  SmallVector<bool> scalableDims{true, false, true, false, false};
+  SmallVector<int64_t> shape{ShapedType::kDynamic, 4, ShapedType::kDynamic, 9,
+                             1};
+  SmallVector<int64_t> scalableDims{2, 0, 8, 0, 0};
   VectorType vectorType = VectorType::get(shape, f32, scalableDims);
 
   {

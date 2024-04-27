@@ -28,8 +28,8 @@ static VectorType trimLeadingOneDims(VectorType oldType) {
   ArrayRef<int64_t> oldShape = oldType.getShape();
   ArrayRef<int64_t> newShape = oldShape;
 
-  ArrayRef<bool> oldScalableDims = oldType.getScalableDims();
-  ArrayRef<bool> newScalableDims = oldScalableDims;
+  ArrayRef<int64_t> oldScalableDims = oldType.getScalableDims();
+  ArrayRef<int64_t> newScalableDims = oldScalableDims;
 
   while (!newShape.empty() && newShape.front() == 1 &&
          !newScalableDims.front()) {

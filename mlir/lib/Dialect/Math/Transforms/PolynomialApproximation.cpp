@@ -42,7 +42,7 @@ using namespace mlir::vector;
 // Helper to encapsulate a vector's shape (including scalable dims).
 struct VectorShape {
   ArrayRef<int64_t> sizes;
-  ArrayRef<bool> scalableFlags;
+  ArrayRef<int64_t> scalableFlags;
 
   bool empty() const { return sizes.empty(); }
 };

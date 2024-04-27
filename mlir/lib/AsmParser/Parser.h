@@ -216,7 +216,7 @@ public:
   /// Parse a vector type.
   VectorType parseVectorType();
   ParseResult parseVectorDimensionList(SmallVectorImpl<int64_t> &dimensions,
-                                       SmallVectorImpl<bool> &scalableDims);
+                                       SmallVectorImpl<int64_t> &scalableDims);
   ParseResult parseDimensionListRanked(SmallVectorImpl<int64_t> &dimensions,
                                        bool allowDynamic = true,
                                        bool withTrailingX = true);

@@ -457,12 +457,17 @@ VectorType Parser::parseVectorType() {
     return nullptr;
 
   SmallVector<int64_t, 4> dimensions;
-  SmallVector<bool, 4> scalableDims;
+  SmallVector<int64_t, 4> scalableDims;
   if (parseVectorDimensionList(dimensions, scalableDims))
     return nullptr;
-  if (any_of(dimensions, [](int64_t i) { return i <= 0; }))
+  if (any_of(dimensions,
+             [](int64_t i) { return (i <= 0) && (i != ShapedType::kDynamic); }))
     return emitError(getToken().getLoc(),
                      "vector types must have positive constant sizes"),
+           nullptr;
+  if (any_of(scalableDims, [](int64_t i) { return i < 0; }))
+    return emitError(getToken().getLoc(),
+                     "vector types must have positive constant scalable base sizes"),
            nullptr;
 
   // Parse the element type.
@@ -489,19 +494,22 @@ VectorType Parser::parseVectorType() {
 ///
 ParseResult
 Parser::parseVectorDimensionList(SmallVectorImpl<int64_t> &dimensions,
-                                 SmallVectorImpl<bool> &scalableDims) {
+                                 SmallVectorImpl<int64_t> &scalableDims) {
   // If there is a set of fixed-length dimensions, consume it
   while (getToken().is(Token::integer) || getToken().is(Token::l_square)) {
     int64_t value;
     bool scalable = consumeIf(Token::l_square);
     if (parseIntegerInDimensionList(value))
       return failure();
-    dimensions.push_back(value);
     if (scalable) {
+      dimensions.push_back(ShapedType::kDynamic);
+      scalableDims.push_back(value);
       if (!consumeIf(Token::r_square))
         return emitWrongTokenError("missing ']' closing scalable dimension");
+    } else {
+      dimensions.push_back(value);
+      scalableDims.push_back(0);
     }
-    scalableDims.push_back(scalable);
     // Make sure we have an 'x' or something like 'xbf32'.
     if (parseXInDimensionList())
       return failure();

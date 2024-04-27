@@ -203,12 +203,12 @@ struct VectorizationState {
       Type elementType,
       std::optional<AffineMap> dimPermutation = std::nullopt) const {
     SmallVector<int64_t> vectorShape;
-    SmallVector<bool> scalableDims;
+    SmallVector<int64_t> scalableDims;
     if (dimPermutation.has_value()) {
       vectorShape =
           applyPermutationMap<int64_t>(*dimPermutation, canonicalVecShape);
       scalableDims =
-          applyPermutationMap<bool>(*dimPermutation, scalableVecDims);
+          applyPermutationMap<int64_t>(*dimPermutation, scalableVecDims);
     } else {
       vectorShape.append(canonicalVecShape.begin(), canonicalVecShape.end());
       scalableDims.append(scalableVecDims.begin(), scalableVecDims.end());
@@ -260,7 +260,7 @@ private:
 
   /// Holds the vector dimensions that are scalable in the canonical vector
   /// shape.
-  SmallVector<bool> scalableVecDims;
+  SmallVector<int64_t> scalableVecDims;
 
   /// Holds the active masks for permutations of the canonical vector iteration
   /// space.
@@ -3184,7 +3184,7 @@ struct Conv1DGenerator
     // Masks the input xfer Op along the channel dim, iff the corresponding
     // scalable flag is set.
     auto maybeMaskXferOp = [&](ArrayRef<int64_t> maskShape,
-                               ArrayRef<bool> scalableDims,
+                               ArrayRef<int64_t> scalableDims,
                                Operation *opToMask) {
       if (!useMasking)
         return opToMask;

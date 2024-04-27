@@ -311,11 +311,11 @@ public:
 
   /// Build from scratch.
   Builder(ArrayRef<int64_t> shape, Type elementType,
-          ArrayRef<bool> scalableDims = {})
+          ArrayRef<int64_t> scalableDims = {})
       : elementType(elementType), shape(shape), scalableDims(scalableDims) {}
 
   Builder &setShape(ArrayRef<int64_t> newShape,
-                    ArrayRef<bool> newIsScalableDim = {}) {
+                    ArrayRef<int64_t> newIsScalableDim = {}) {
     shape = newShape;
     scalableDims = newIsScalableDim;
     return *this;
@@ -349,7 +349,7 @@ public:
 private:
   Type elementType;
   CopyOnWriteArrayRef<int64_t> shape;
-  CopyOnWriteArrayRef<bool> scalableDims;
+  CopyOnWriteArrayRef<int64_t> scalableDims;
 };
 
 /// Given an `originalShape` and a `reducedShape` assumed to be a subset of

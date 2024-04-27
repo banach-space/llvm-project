@@ -1058,7 +1058,7 @@ ShapedType Parser::parseElementsLiteralType(Type type) {
     return nullptr;
   }
 
-  if (!sType.hasStaticShape())
+  if (!isa<VectorType>(sType) && !sType.hasStaticShape())
     return (emitError("elements literal type must have static shape"), nullptr);
 
   return sType;

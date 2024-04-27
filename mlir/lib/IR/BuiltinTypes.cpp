@@ -227,13 +227,14 @@ LogicalResult OpaqueType::verify(function_ref<InFlightDiagnostic()> emitError,
 
 LogicalResult VectorType::verify(function_ref<InFlightDiagnostic()> emitError,
                                  ArrayRef<int64_t> shape, Type elementType,
-                                 ArrayRef<bool> scalableDims) {
+                                 ArrayRef<int64_t> scalableDims) {
   if (!isValidElementType(elementType))
     return emitError()
            << "vector elements must be int/index/float type but got "
            << elementType;
 
-  if (any_of(shape, [](int64_t i) { return i <= 0; }))
+  if (any_of(shape,
+             [](int64_t i) { return (i <= 0) && (i != ShapedType::kDynamic); }))
     return emitError()
            << "vector types must have positive constant sizes but got "
            << shape;
@@ -864,7 +865,8 @@ void TupleType::getFlattenedTypes(SmallVectorImpl<Type> &types) {
 }
 
 /// Return the number of element types.
-size_t TupleType::size() const { return getImpl()->size(); }
+size_t TupleType::size() const {
+    return getImpl()->size(); }
 
 //===----------------------------------------------------------------------===//
 // Type Utilities

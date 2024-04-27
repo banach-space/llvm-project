@@ -42,7 +42,7 @@ static Value extendVectorRank(OpBuilder &builder, Location loc, Value vec,
   newShape.append(originalVecType.getShape().begin(),
                   originalVecType.getShape().end());
 
-  SmallVector<bool> newScalableDims(addedRank, false);
+  SmallVector<int64_t> newScalableDims(addedRank, 0);
   newScalableDims.append(originalVecType.getScalableDims().begin(),
                          originalVecType.getScalableDims().end());
   VectorType newVecType = VectorType::get(
@@ -119,8 +119,8 @@ struct TransferReadPermutationLowering
     // Apply the reverse transpose to deduce the type of the transfer_read.
     ArrayRef<int64_t> originalShape = op.getVectorType().getShape();
     SmallVector<int64_t> newVectorShape(originalShape.size());
-    ArrayRef<bool> originalScalableDims = op.getVectorType().getScalableDims();
-    SmallVector<bool> newScalableDims(originalShape.size());
+    ArrayRef<int64_t> originalScalableDims = op.getVectorType().getScalableDims();
+    SmallVector<int64_t> newScalableDims(originalShape.size());
     for (const auto &pos : llvm::enumerate(permutation)) {
       newVectorShape[pos.value()] = originalShape[pos.index()];
       newScalableDims[pos.value()] = originalScalableDims[pos.index()];
@@ -354,7 +354,7 @@ struct TransferOpReduceRank : public OpRewritePattern<vector::TransferReadOp> {
 
     SmallVector<int64_t> newShape(
         originalVecType.getShape().take_back(reducedShapeRank));
-    SmallVector<bool> newScalableDims(
+    SmallVector<int64_t> newScalableDims(
         originalVecType.getScalableDims().take_back(reducedShapeRank));
     // Vector rank cannot be zero. Handled by TransferReadToVectorLoadLowering.
     if (newShape.empty())

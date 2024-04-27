@@ -1339,7 +1339,7 @@ DenseElementsAttr DenseIntOrFPElementsAttr::getRaw(ShapedType type,
 
 DenseElementsAttr DenseIntOrFPElementsAttr::getRaw(ShapedType type,
                                                    ArrayRef<char> data) {
-  assert(type.hasStaticShape() && "type must have static shape");
+  assert((llvm::isa<VectorType>(type) || type.hasStaticShape()) && "type must have static shape");
   bool isSplat = false;
   bool isValid = isValidRawBuffer(type, data, isSplat);
   assert(isValid);

@@ -433,7 +433,7 @@ MultiDimReductionOp::getShapeForUnroll() {
 
 LogicalResult MultiDimReductionOp::verify() {
   SmallVector<int64_t> targetShape;
-  SmallVector<bool> scalableDims;
+  SmallVector<int64_t> scalableDims;
   Type inferredReturnType;
   auto sourceScalableDims = getSourceVectorType().getScalableDims();
   for (auto it : llvm::enumerate(getSourceVectorType().getShape()))
@@ -1002,7 +1002,7 @@ Type ContractionOp::getExpectedMaskType() {
 
   unsigned numVecDims = lhsIdxMap.getNumDims();
   SmallVector<int64_t> maskShape(numVecDims, ShapedType::kDynamic);
-  SmallVector<bool> maskShapeScalableDims(numVecDims, false);
+  SmallVector<int64_t> maskShapeScalableDims(numVecDims, false);
 
   // Using the information in the indexing maps, extract the size of each
   // dimension in the vector.contract operation from the two input operands.
@@ -3115,13 +3115,13 @@ ParseResult OuterProductOp::parse(OpAsmParser &parser, OperationState &result) {
 
   VectorType resType;
   if (vRHS) {
-    SmallVector<bool> scalableDimsRes{vLHS.getScalableDims()[0],
+    SmallVector<int64_t> scalableDimsRes{vLHS.getScalableDims()[0],
                                       vRHS.getScalableDims()[0]};
     resType = VectorType::get({vLHS.getDimSize(0), vRHS.getDimSize(0)},
                               vLHS.getElementType(), scalableDimsRes);
   } else {
     // Scalar RHS operand
-    SmallVector<bool> scalableDimsRes{vLHS.getScalableDims()[0]};
+    SmallVector<int64_t> scalableDimsRes{vLHS.getScalableDims()[0]};
     resType = VectorType::get({vLHS.getDimSize(0)}, vLHS.getElementType(),
                               scalableDimsRes);
   }
@@ -3851,7 +3851,7 @@ VectorType mlir::vector::inferTransferOpMaskType(VectorType vecType,
   assert(invPermMap && "Inversed permutation map couldn't be computed");
   SmallVector<int64_t, 8> maskShape = invPermMap.compose(vecType.getShape());
 
-  SmallVector<bool> scalableDims =
+  SmallVector<int64_t> scalableDims =
       applyPermutationMap(invPermMap, vecType.getScalableDims());
 
   return VectorType::get(maskShape, i1Type, scalableDims);
@@ -4164,7 +4164,7 @@ struct TransferReadAfterWriteToBroadcast
     // final shape we want.
     ArrayRef<int64_t> destShape = readOp.getVectorType().getShape();
     SmallVector<int64_t> broadcastShape(destShape.size());
-    SmallVector<bool> broadcastScalableFlags(destShape.size());
+    SmallVector<int64_t> broadcastScalableFlags(destShape.size());
     for (const auto &pos : llvm::enumerate(permutation)) {
       broadcastShape[pos.value()] = destShape[pos.index()];
       broadcastScalableFlags[pos.value()] =
@@ -5172,8 +5172,8 @@ static VectorType trimTrailingOneDims(VectorType oldType) {
   ArrayRef<int64_t> oldShape = oldType.getShape();
   ArrayRef<int64_t> newShape = oldShape;
 
-  ArrayRef<bool> oldScalableDims = oldType.getScalableDims();
-  ArrayRef<bool> newScalableDims = oldScalableDims;
+  ArrayRef<int64_t> oldScalableDims = oldType.getScalableDims();
+  ArrayRef<int64_t> newScalableDims = oldScalableDims;
 
   while (!newShape.empty() && newShape.back() == 1 && !newScalableDims.back()) {
     newShape = newShape.drop_back(1);
@@ -5479,7 +5479,7 @@ void vector::TransposeOp::build(OpBuilder &builder, OperationState &result,
                                 Value vector, ArrayRef<int64_t> permutation) {
   VectorType vt = llvm::cast<VectorType>(vector.getType());
   SmallVector<int64_t, 4> transposedShape(vt.getRank());
-  SmallVector<bool, 4> transposedScalableDims(vt.getRank());
+  SmallVector<int64_t, 4> transposedScalableDims(vt.getRank());
   for (unsigned i = 0; i < permutation.size(); ++i) {
     transposedShape[i] = vt.getShape()[permutation[i]];
     transposedScalableDims[i] = vt.getScalableDims()[permutation[i]];

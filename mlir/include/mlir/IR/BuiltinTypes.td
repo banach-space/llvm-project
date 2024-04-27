@@ -1099,18 +1099,18 @@ def Builtin_Vector : Builtin_Type<"Vector", "vector", [ShapedTypeInterface], "Ty
   let parameters = (ins
     ArrayRefParameter<"int64_t">:$shape,
     "Type":$elementType,
-    ArrayRefParameter<"bool">:$scalableDims
+    ArrayRefParameter<"int64_t">:$scalableDims
   );
   let builders = [
     TypeBuilderWithInferredContext<(ins
       "ArrayRef<int64_t>":$shape, "Type":$elementType,
-      CArg<"ArrayRef<bool>", "{}">:$scalableDims
+      CArg<"ArrayRef<int64_t>", "{}">:$scalableDims
     ), [{
       // While `scalableDims` is optional, its default value should be
       // `false` for every dim in `shape`.
-      SmallVector<bool> isScalableVec;
+      SmallVector<int64_t> isScalableVec;
       if (scalableDims.empty()) {
-        isScalableVec.resize(shape.size(), false);
+        isScalableVec.resize(shape.size(), 0);
         scalableDims = isScalableVec;
       }
       return $_get(elementType.getContext(), shape, elementType, scalableDims);
@@ -1130,13 +1130,13 @@ def Builtin_Vector : Builtin_Type<"Vector", "vector", [ShapedTypeInterface], "Ty
 
     /// Returns true if the vector contains scalable dimensions.
     bool isScalable() const {
-      return llvm::is_contained(getScalableDims(), true);
+      return !llvm::all_of(getScalableDims(), [](auto dim) {return dim == 0;});
     }
     bool allDimsScalable() const {
       // Treat 0-d vectors as fixed size.
       if (getRank() == 0)
         return false;
-      return !llvm::is_contained(getScalableDims(), false);
+      return llvm::all_of(getScalableDims(), [](auto dim) {return dim != 0;});
     }
 
     /// Get or create a new VectorType with the same shape as `this` and an

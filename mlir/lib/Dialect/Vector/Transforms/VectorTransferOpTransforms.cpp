@@ -317,7 +317,7 @@ static int getReducedRank(ArrayRef<int64_t> shape) {
 /// type.
 static VectorType trimNonScalableUnitDims(VectorType oldType) {
   SmallVector<int64_t> newShape;
-  SmallVector<bool> newScalableDims;
+  SmallVector<int64_t> newScalableDims;
   for (auto [dimIdx, dimSize] : llvm::enumerate(oldType.getShape())) {
     if (dimSize == 1 && !oldType.getScalableDims()[dimIdx])
       continue;

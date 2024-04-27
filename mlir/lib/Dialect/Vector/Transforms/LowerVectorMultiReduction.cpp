@@ -184,7 +184,7 @@ public:
 
     // 1. Separate reduction and parallel dims.
     SmallVector<int64_t, 4> parallelDims, parallelShapes;
-    SmallVector<bool, 4> parallelScalableDims;
+    SmallVector<int64_t, 4> parallelScalableDims;
     SmallVector<int64_t, 4> reductionDims, reductionShapes;
     bool isReductionDimScalable = false;
     for (const auto &it : llvm::enumerate(reductionMask)) {
@@ -233,9 +233,9 @@ public:
     // 4. Shape cast to collapse consecutive parallel (resp. reduction dim) into
     // a single parallel (resp. reduction) dim.
     SmallVector<bool, 2> mask;
-    SmallVector<bool, 2> scalableDims;
+    SmallVector<int64_t, 2> scalableDims;
     SmallVector<int64_t, 2> vectorShape;
-    bool isParallelDimScalable = llvm::is_contained(parallelScalableDims, true);
+    bool isParallelDimScalable = llvm::any_of(parallelScalableDims, [](auto dim){return dim != 0;});
     if (flattenedParallelDim) {
       mask.push_back(false);
       vectorShape.push_back(flattenedParallelDim);
