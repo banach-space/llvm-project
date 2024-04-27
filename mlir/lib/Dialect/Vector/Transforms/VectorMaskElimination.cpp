@@ -24,7 +24,7 @@ LogicalResult resolveAllTrueCreateMaskOp(IRRewriter &rewriter,
                                          VscaleRange vscaleRange) {
   auto maskType = createMaskOp.getVectorType();
   auto maskTypeDimScalableFlags = maskType.getScalableDims();
-  auto maskTypeDimSizes = maskType.getShape();
+  auto maskTypeDimSizes = maskType.getBaseShape();
 
   struct UnknownMaskDim {
     size_t position;
@@ -41,7 +41,8 @@ LogicalResult resolveAllTrueCreateMaskOp(IRRewriter &rewriter,
   for (auto [i, dimSize] : llvm::enumerate(createMaskOp.getOperands())) {
     if (auto intSize = getConstantIntValue(dimSize)) {
       // Mask not all-true for this dim.
-      if (maskTypeDimScalableFlags[i] || intSize < maskTypeDimSizes[i])
+      if (maskTypeDimScalableFlags[i] != ShapedType::kDynamic ||
+          intSize < maskTypeDimSizes[i])
         return failure();
     } else if (auto vscaleMultiplier = getConstantVscaleMultiplier(dimSize)) {
       // Mask not all-true for this dim.
@@ -73,7 +74,7 @@ LogicalResult resolveAllTrueCreateMaskOp(IRRewriter &rewriter,
     } else {
       // 2. The lower bound, LB, is a constant.
       // - If the mask dim size is scalable then this dim is not all-true.
-      if (maskTypeDimScalableFlags[i])
+      if (maskTypeDimScalableFlags[i] != ShapedType::kDynamic)
         return failure();
       // - If LB < the _fixed-size_ mask dim size then this dim is not all-true.
       if (dimLowerBoundSize->baseSize < maskTypeDimSizes[i])

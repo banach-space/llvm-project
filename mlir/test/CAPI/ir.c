@@ -759,9 +759,11 @@ static int printBuiltinTypes(MlirContext ctx) {
   // CHECK: vector<2x3xf32>
 
   // Scalable vector type.
-  bool scalable[] = {false, true};
+  int64_t shapedTypeDynamic = mlirShapedTypeGetDynamicSize();
+  int64_t fixedDims[] = {shape[0], shapedTypeDynamic};
+  int64_t scalableDims[] = {shapedTypeDynamic, shape[1]};
   MlirType scalableVector = mlirVectorTypeGetScalable(
-      sizeof(shape) / sizeof(int64_t), shape, scalable, f32);
+      sizeof(fixedDims) / sizeof(int64_t), fixedDims, scalableDims, f32);
   if (!mlirTypeIsAVector(scalableVector))
     return 16;
   if (!mlirVectorTypeIsScalable(scalableVector) ||

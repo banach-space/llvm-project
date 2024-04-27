@@ -58,7 +58,7 @@ public:
       return rewriter.notifyMatchFailure(
           op, "0-D and 1-D vectors are handled separately");
 
-    if (dstType.getScalableDims().front())
+    if (dstType.getScalableDims().front() != ShapedType::kDynamic)
       return rewriter.notifyMatchFailure(
           op, "Cannot unroll leading scalable dim in dstType");
 
@@ -122,7 +122,7 @@ public:
     int64_t trueDimSize = dimSizes.front();
 
     if (rank == 1) {
-      if (trueDimSize == 0 || trueDimSize == dstType.getDimSize(0)) {
+      if (trueDimSize == 0 || trueDimSize == dstType.getBaseDimSize(0)) {
         // Use constant splat for 'all set' or 'none set' dims.
         // This produces correct code for scalable dimensions (it will lower to
         // a constant splat).
@@ -132,7 +132,7 @@ public:
         // Express constant 1-D case in explicit vector form:
         //   [T,..,T,F,..,F].
         // Note: The verifier would reject this case for scalable vectors.
-        SmallVector<bool> values(dstType.getDimSize(0), false);
+        SmallVector<bool> values(dstType.getBaseDimSize(0), false);
         for (int64_t d = 0; d < trueDimSize; d++)
           values[d] = true;
         rewriter.replaceOpWithNewOp<arith::ConstantOp>(
@@ -141,7 +141,7 @@ public:
       return success();
     }
 
-    if (dstType.getScalableDims().front())
+    if (dstType.getScalableDims().front() != ShapedType::kDynamic)
       return rewriter.notifyMatchFailure(
           op, "Cannot unroll leading scalable dim in dstType");
 

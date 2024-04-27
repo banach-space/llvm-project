@@ -372,7 +372,7 @@ struct TransposeOpToArmSMELowering
     Value vscale =
         rewriter.create<vector::VectorScaleOp>(loc, rewriter.getIndexType());
     Value minTileSlices = rewriter.create<arith::ConstantOp>(
-        loc, rewriter.getIndexAttr(tileType.getDimSize(0)));
+        loc, rewriter.getIndexAttr(tileType.getBaseDimSize(0)));
     Value c0 =
         rewriter.create<arith::ConstantOp>(loc, rewriter.getIndexAttr(0));
     Value numTileSlices =
@@ -643,8 +643,8 @@ struct VectorPrintToArmSMELowering : public OpRewritePattern<vector::PrintOp> {
 
     // Create a loop over the rows of the tile.
     auto vscale = rewriter.create<vector::VectorScaleOp>(loc);
-    auto minTileRows =
-        rewriter.create<arith::ConstantIndexOp>(loc, vectorType.getDimSize(0));
+    auto minTileRows = rewriter.create<arith::ConstantIndexOp>(
+        loc, vectorType.getBaseDimSize(0));
     auto lowerBound = rewriter.create<arith::ConstantIndexOp>(loc, 0);
     auto upperBound = rewriter.create<arith::MulIOp>(loc, minTileRows, vscale);
     auto step = rewriter.create<arith::ConstantIndexOp>(loc, 1);
@@ -763,8 +763,8 @@ struct ExtractFromCreateMaskToPselLowering
       return size > 0 && size <= 16 && llvm::isPowerOf2_32(uint32_t(size));
     };
 
-    auto rowsBaseSize = maskType.getDimSize(0);
-    auto colsBaseSize = maskType.getDimSize(1);
+    auto rowsBaseSize = maskType.getBaseDimSize(0);
+    auto colsBaseSize = maskType.getBaseDimSize(1);
     if (!isSVEPredicateSize(rowsBaseSize) || !isSVEPredicateSize(colsBaseSize))
       return rewriter.notifyMatchFailure(
           createMaskOp, "mask dimensions not SVE predicate-sized");

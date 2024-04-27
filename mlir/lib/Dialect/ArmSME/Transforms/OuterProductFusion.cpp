@@ -210,15 +210,20 @@ private:
                                      arm_sme::OuterProductOp op2) const {
     // Supported result types.
     auto nxnxv4i32 =
-        VectorType::get({4, 4}, rewriter.getI32Type(), {true, true});
+        VectorType::get({ShapedType::kDynamic, ShapedType::kDynamic},
+                        rewriter.getI32Type(), {4, 4});
     auto nxnxv4f32 =
-        VectorType::get({4, 4}, rewriter.getF32Type(), {true, true});
+        VectorType::get({ShapedType::kDynamic, ShapedType::kDynamic},
+                        rewriter.getF32Type(), {4, 4});
     // Supported input types.
     // Note: this is before packing so these have half the number of elements
     // of the input vector types of the 2-way operations.
-    auto nxv4i16 = VectorType::get({4}, rewriter.getI16Type(), true);
-    auto nxv4f16 = VectorType::get({4}, rewriter.getF16Type(), true);
-    auto nxv4bf16 = VectorType::get({4}, rewriter.getBF16Type(), true);
+    auto nxv4i16 =
+        VectorType::get(ShapedType::kDynamic, rewriter.getI16Type(), {4});
+    auto nxv4f16 =
+        VectorType::get(ShapedType::kDynamic, rewriter.getF16Type(), {4});
+    auto nxv4bf16 =
+        VectorType::get(ShapedType::kDynamic, rewriter.getBF16Type(), {4});
     if ((failed(
              isCompatible<arith::ExtFOp>(rewriter, op1, nxnxv4f32, nxv4f16)) ||
          failed(
@@ -382,15 +387,19 @@ private:
                        ArrayRef<arm_sme::OuterProductOp> ops) const {
     // Supported result types.
     auto nxnxv4i32 =
-        VectorType::get({4, 4}, rewriter.getI32Type(), {true, true});
+        VectorType::get({ShapedType::kDynamic, ShapedType::kDynamic},
+                        rewriter.getI32Type(), {4, 4});
     auto nxnxv2i64 =
-        VectorType::get({2, 2}, rewriter.getI64Type(), {true, true});
+        VectorType::get({ShapedType::kDynamic, ShapedType::kDynamic},
+                        rewriter.getI64Type(), {2, 2});
 
     // Supported input types.
     // Note: this is before packing so these have 1/4 the number of elements
     // of the input vector types of the 4-way operations.
-    auto nxv4i8 = VectorType::get({4}, rewriter.getI8Type(), true);
-    auto nxv2i16 = VectorType::get({2}, rewriter.getI16Type(), true);
+    auto nxv4i8 =
+        VectorType::get({ShapedType::kDynamic}, rewriter.getI8Type(), 4);
+    auto nxv2i16 =
+        VectorType::get({ShapedType::kDynamic}, rewriter.getI16Type(), 2);
 
     auto failedToMatch = [&](VectorType resultType, VectorType inputType,
                              auto lhsExtendOp, auto rhsExtendOp) {

@@ -29,6 +29,11 @@ Type ElementsAttr::getElementType(ElementsAttr elementsAttr) {
 }
 
 int64_t ElementsAttr::getNumElements(ElementsAttr elementsAttr) {
+  // --------------------------------------------------------------
+  // TODO: If dynamic shape, assume that only 1 element is passed
+  // --------------------------------------------------------------
+  if (ShapedType::isDynamicShape(elementsAttr.getShapedType().getShape()))
+    return 1;
   return elementsAttr.getShapedType().getNumElements();
 }
 

@@ -328,12 +328,12 @@ static FailureOr<MemRefType> unpackOneDim(MemRefType type) {
   auto vectorType = dyn_cast<VectorType>(type.getElementType());
   // Vectors with leading scalable dims are not supported.
   // It may be possible to support these in future by using dynamic memref dims.
-  if (vectorType.getScalableDims().front())
+  if (vectorType.isScalableDim(0))
     return failure();
   auto memrefShape = type.getShape();
   SmallVector<int64_t, 8> newMemrefShape;
   newMemrefShape.append(memrefShape.begin(), memrefShape.end());
-  newMemrefShape.push_back(vectorType.getDimSize(0));
+  newMemrefShape.push_back(vectorType.getBaseDimSize(0));
   return MemRefType::get(newMemrefShape,
                          VectorType::Builder(vectorType).dropDim(0));
 }
@@ -557,7 +557,9 @@ static LogicalResult checkPrepareXferOp(OpTy xferOp, PatternRewriter &rewriter,
   if (xferOp.getVectorType().getRank() <= options.targetRank)
     return rewriter.notifyMatchFailure(
         xferOp, "xferOp vector rank <= transformation target rank");
-  if (xferOp.getVectorType().getScalableDims().front())
+  // Currently the unpacking of the leading dimension into the memref is not
+  // supported for scalable dimensions.
+  if (xferOp.getVectorType().isScalableDim(0))
     return rewriter.notifyMatchFailure(
         xferOp, "Unpacking of the leading dimension into the memref is not yet "
                 "supported for scalable dims");
@@ -754,16 +756,17 @@ struct DecomposePrintOpConversion : public VectorToSCFPattern<vector::PrintOp> {
     }
 
     auto scalableDimensions = vectorType.getScalableDims();
-    auto shape = vectorType.getShape();
+    auto baseShape = vectorType.getBaseShape();
+    ArrayRef<int64_t> shaep(baseShape);
     constexpr int64_t singletonShape[] = {1};
     if (vectorType.getRank() == 0)
-      shape = singletonShape;
+      shaep = singletonShape;
 
     if (vectorType.getRank() != 1) {
       // Flatten n-D vectors to 1D. This is done to allow indexing with a
       // non-constant value (which can currently only be done via
       // vector.extractelement for 1D vectors).
-      auto flatLength = std::accumulate(shape.begin(), shape.end(), 1,
+      auto flatLength = std::accumulate(shaep.begin(), shaep.end(), 1,
                                         std::multiplies<int64_t>());
       auto flatVectorType =
           VectorType::get({flatLength}, vectorType.getElementType());
@@ -772,12 +775,13 @@ struct DecomposePrintOpConversion : public VectorToSCFPattern<vector::PrintOp> {
 
     vector::PrintOp firstClose;
     SmallVector<Value, 8> loopIndices;
-    for (unsigned d = 0; d < shape.size(); d++) {
+    for (unsigned d = 0; d < shaep.size(); d++) {
       // Setup loop bounds and step.
       Value lowerBound = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-      Value upperBound = rewriter.create<arith::ConstantIndexOp>(loc, shape[d]);
+      Value upperBound = rewriter.create<arith::ConstantIndexOp>(loc, shaep[d]);
       Value step = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-      if (!scalableDimensions.empty() && scalableDimensions[d]) {
+      if (!scalableDimensions.empty() &&
+          (scalableDimensions[d] != ShapedType::kDynamic)) {
         auto vscale = rewriter.create<vector::VectorScaleOp>(
             loc, rewriter.getIndexType());
         upperBound = rewriter.create<arith::MulIOp>(loc, upperBound, vscale);
@@ -814,14 +818,14 @@ struct DecomposePrintOpConversion : public VectorToSCFPattern<vector::PrintOp> {
     // Note: For the > rank 1 vectors this assumes non-scalable.
     Value flatIndex;
     auto currentStride = 1;
-    for (int d = shape.size() - 1; d >= 0; d--) {
+    for (int d = shaep.size() - 1; d >= 0; d--) {
       auto stride = rewriter.create<arith::ConstantIndexOp>(loc, currentStride);
       auto index = rewriter.create<arith::MulIOp>(loc, stride, loopIndices[d]);
       if (flatIndex)
         flatIndex = rewriter.create<arith::AddIOp>(loc, flatIndex, index);
       else
         flatIndex = index;
-      currentStride *= shape[d];
+      currentStride *= shaep[d];
     }
 
     // Print the scalar elements in the inner most loop.
@@ -1023,7 +1027,7 @@ getMaskDimSizes(Value mask, VscaleConstantBuilder &createVscaleMultiple) {
     return llvm::map_to_vector(
         constantMask.getMaskDimSizes(), [&](int64_t dimSize) {
           // A scalable dim in a constant_mask means vscale x dimSize.
-          if (maskType.getScalableDims()[dimIdx++])
+          if (maskType.getScalableDims()[dimIdx++] != ShapedType::kDynamic)
             return OpFoldResult(createVscaleMultiple(dimSize));
           return OpFoldResult(IntegerAttr::get(indexType, dimSize));
         });
@@ -1081,8 +1085,9 @@ struct ScalableTransposeTransferWriteConversion
 
     // Note: By comparing the scalable dims to an ArrayRef of length two this
     // implicitly checks the rank (is also two).
-    ArrayRef<bool> scalableFlags = vectorType.getScalableDims();
-    if (scalableFlags != ArrayRef<bool>{true, false}) {
+    ArrayRef<int64_t> scalableFlags = vectorType.getScalableDims();
+    if (scalableFlags.size() != 2 || scalableFlags[0] == ShapedType::kDynamic ||
+        scalableFlags[1] != ShapedType::kDynamic) {
       return rewriter.notifyMatchFailure(
           writeOp, "expected vector of the form vector<[N]xMxty>");
     }
@@ -1132,7 +1137,7 @@ struct ScalableTransposeTransferWriteConversion
     auto lb = rewriter.create<arith::ConstantIndexOp>(loc, 0);
     auto ub =
         maskDims->empty()
-            ? Value(createVscaleMultiple(vectorType.getDimSize(0)))
+            ? Value(createVscaleMultiple(vectorType.getBaseDimSize(0)))
             : vector::getAsValues(rewriter, loc, maskDims->front()).front();
     auto step = rewriter.create<arith::ConstantIndexOp>(loc, 1);
 
@@ -1307,7 +1312,8 @@ struct UnrollTransferReadConversion
       return rewriter.notifyMatchFailure(
           xferOp, "not yet supported: element type mismatch");
     auto xferVecType = xferOp.getVectorType();
-    if (xferVecType.getScalableDims()[0]) {
+    if (xferVecType.isScalableDim(0)) {
+      // Cannot unroll a scalable dimension at compile time.
       return rewriter.notifyMatchFailure(
           xferOp, "scalable dimensions cannot be unrolled at compile time");
     }
@@ -1443,7 +1449,7 @@ struct UnrollTransferWriteConversion
       return failure();
 
     auto vec = getDataVector(xferOp);
-    if (inputVectorTy.getScalableDims()[0]) {
+    if (inputVectorTy.isScalableDim(0)) {
       // Cannot unroll a scalable dimension at compile time.
       return failure();
     }
@@ -1664,7 +1670,7 @@ struct TransferOp1dConversion : public VectorToSCFPattern<OpTy> {
     auto vecType = xferOp.getVectorType();
     auto lb = rewriter.create<arith::ConstantIndexOp>(loc, 0);
     Value ub =
-        rewriter.create<arith::ConstantIndexOp>(loc, vecType.getDimSize(0));
+        rewriter.create<arith::ConstantIndexOp>(loc, vecType.getBaseDimSize(0));
     if (vecType.isScalable()) {
       Value vscale =
           rewriter.create<vector::VectorScaleOp>(loc, rewriter.getIndexType());

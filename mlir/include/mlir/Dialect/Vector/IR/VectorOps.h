@@ -74,7 +74,7 @@ enum class BroadcastableToResult {
 
 struct VectorDim {
   int64_t dim;
-  bool isScalable;
+  int64_t scalableDim;
 };
 BroadcastableToResult
 isBroadcastableTo(Type srcType, VectorType dstVectorType,

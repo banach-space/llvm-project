@@ -64,8 +64,8 @@ FailureOr<scf::ForOp> createLoadStoreForOverTileSlices(
       loc, arm_sme::getSMETileSliceMinNumElts(tileType.getElementType()));
   auto vscale =
       rewriter.create<vector::VectorScaleOp>(loc, rewriter.getIndexType());
-  auto predicateType =
-      VectorType::get(tileType.getDimSize(1), rewriter.getI1Type(), true);
+  auto predicateType = VectorType::get(
+      ShapedType::kDynamic, rewriter.getI1Type(), tileType.getBaseDimSize(1));
 
   // This describes both the number of ZA tile slices and the number of
   // elements in a vector of SVL bits for a given element type (SVL_B,
@@ -315,8 +315,8 @@ struct TileLoadOpWithMaskAndPadNonZeroConversion
     auto mask = rewriter.create<arith::AndIOp>(loc, rowIsActiveI32, numColsI32);
     auto maskIndex =
         rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), mask);
-    auto predicateType =
-        VectorType::get(tileType.getDimSize(1), rewriter.getI1Type(), true);
+    auto predicateType = VectorType::get(
+        ShapedType::kDynamic, rewriter.getI1Type(), tileType.getBaseDimSize(1));
     auto maskOp1D = rewriter.create<vector::CreateMaskOp>(
         loc, predicateType, maskIndex.getResult());
 

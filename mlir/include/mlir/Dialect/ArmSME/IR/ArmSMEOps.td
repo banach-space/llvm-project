@@ -601,7 +601,7 @@ def InsertTileSliceOp : ArmSME_Op<"insert_tile_slice", [
       "VectorType::get("
         "::llvm::cast<mlir::VectorType>($_self).getShape().drop_front(),"
         "::llvm::cast<mlir::VectorType>($_self).getElementType(),"
-        "/*scalableDims=*/{true})">,
+        "::llvm::cast<mlir::VectorType>($_self).getScalableDims().drop_front())">,
 ]> {
   let summary = "Insert 1-D scalable vector into slice of 2-D tile";
   let description = [{
@@ -692,9 +692,9 @@ class OuterProductResultTileTypeConstraint<string operand> :
     "lhs", operand,
     "[&]{"
     "  auto vectorType = ::llvm::cast<mlir::VectorType>($_self);"
-    "  int64_t size = vectorType.getDimSize(0);"
+    "  int64_t size = vectorType.getScalableDims()[0];"
     "  return VectorType::get("
-    "    { size, size }, vectorType.getElementType(), { true, true });"
+    "    { ShapedType::kDynamic, ShapedType::kDynamic }, vectorType.getElementType(), { size, size });"
     "}()">;
 
 def OuterProductOp :

@@ -394,9 +394,13 @@ void arith::AddUIExtendedOp::getCanonicalizationPatterns(
 OpFoldResult arith::SubIOp::fold(FoldAdaptor adaptor) {
   // subi(x,x) -> 0
   if (getOperand(0) == getOperand(1)) {
-    auto shapedType = dyn_cast<ShapedType>(getType());
+    auto resultType = getType();
+    bool typeSupportedForFold =
+        !isa<ShapedType>(resultType) ||
+        dyn_cast<ShapedType>(resultType).hasStaticShape() ||
+        dyn_cast<VectorType>(resultType);
     // We can't generate a constant with a dynamic shaped tensor.
-    if (!shapedType || shapedType.hasStaticShape())
+    if (typeSupportedForFold)
       return Builder(getContext()).getZeroAttr(getType());
   }
   // subi(x,0) -> x
