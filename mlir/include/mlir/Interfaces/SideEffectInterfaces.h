@@ -15,6 +15,7 @@
 #define MLIR_INTERFACES_SIDEEFFECTINTERFACES_H
 
 #include "mlir/IR/OpDefinition.h"
+#include "llvm/Support/Signals.h"
 
 namespace mlir {
 namespace SideEffects {
@@ -89,6 +90,8 @@ public:
     /// Returns a unique instance for the given effect class.
     static DerivedResource *get() {
       static DerivedResource instance;
+      llvm::outs() << "Address of instance: " << &instance << " \n";
+      llvm::sys::PrintStackTrace(llvm::outs());
       return &instance;
     }
 

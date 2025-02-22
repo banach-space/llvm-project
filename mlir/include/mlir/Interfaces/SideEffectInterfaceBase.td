@@ -139,8 +139,12 @@ class EffectOpInterfaceBase<string name, string baseEffect>
               ::llvm::SmallVectorImpl<::mlir::SideEffects::EffectInstance<
               }] # baseEffect # [{>> & effects) {
       getEffects(effects);
+      llvm::outs() << "    EFFECTS SIZE: " << effects.size() << "\n";
       ::llvm::erase_if(effects, [&](auto &it) {
-        return it.getResource() != resource;
+        llvm::outs() << "   " << resource->getName() << ", "<< resource << "\n";
+        llvm::outs() << "   " << it.getResource()->getName() << ", " << it.getResource() << "\n";
+        /// THIS CHANGE IS MY FIX, BUT IIUC IT SHOULD NOT BE REQUIRED!!
+        return it.getResource()->getResourceID() != resource->getResourceID();
       });
     }
   }];

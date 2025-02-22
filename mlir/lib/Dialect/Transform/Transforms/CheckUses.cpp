@@ -136,8 +136,13 @@ public:
   /// considered to be allocated at its definition point and never re-allocated.
   PotentialDeleters isUseLive(OpOperand &operand) {
     const llvm::SmallPtrSet<Operation *, 2> &deleters = freedBy[operand.get()];
-    if (deleters.empty())
+    llvm::outs() << "Operand (2): " << operand.get() << "\n";
+    llvm::outs() << freedBy.size() << "\n";
+    llvm::outs() << deleters.size() << "\n";
+    if (deleters.empty()) {
+      llvm::outs() << "NO!!!!!!!\n";
       return live();
+    }
 
 #ifndef NDEBUG
     // Check that the definition point actually allocates the value. If the
@@ -346,8 +351,19 @@ private:
       instances.clear();
       iface.getEffectsOnResource(transform::TransformMappingResource::get(),
                                  instances);
+      llvm::outs() << "DUMP INSTANCES \n";
+      llvm::outs() << "(size: " << instances.size();
+      llvm::outs() << " )\n";
+      for (auto i : instances) {
+        llvm::outs() << "Instance: ";
+        i.getValue().dump();
+        llvm::outs() << " ...\n";
+      }
       for (Value operand : child->getOperands()) {
+        llvm::outs() << "IN (before mem effect)\n";
+        operand.dump();
         if (hasEffect<MemoryEffects::Free>(instances, operand)) {
+            llvm::outs() << "IN (_after_ mem effect)\n";
           // All parents of the operation that frees a value should be
           // considered as potentially freeing the value as well.
           //
@@ -366,6 +382,7 @@ private:
         }
       }
     });
+    llvm::outs() << "FreedBy: " << freedBy.size() << "\n";
   }
 
   /// The mapping from a value to operations that have a Free memory effect on
@@ -387,11 +404,16 @@ public:
 
     getOperation()->walk([&](Operation *child) {
       for (OpOperand &operand : child->getOpOperands()) {
+        llvm::outs() << "Operand " << operand.get() << "\n";
+        llvm::outs() << "Child: ";
+        child->dump();
+        llvm::outs() << "\n";
         TransformOpMemFreeAnalysis::PotentialDeleters deleters =
             analysis.isUseLive(operand);
         if (!deleters)
           continue;
 
+        llvm::outs() << "YES!!!!!!!!!!!!!!!!!!!!\n";
         InFlightDiagnostic diag = child->emitWarning()
                                   << "operand #" << operand.getOperandNumber()
                                   << " may be used after free";
