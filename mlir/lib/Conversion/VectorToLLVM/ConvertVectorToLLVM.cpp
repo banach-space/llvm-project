@@ -2000,11 +2000,156 @@ struct VectorScalableStepOpLowering
   }
 };
 
+/// Progressive lowering of a `vector.contract %a, %b, %c` with row-major matmul
+/// semantics to:
+/// ```
+///    %flattened_a = vector.shape_cast %a
+///    %flattened_b = vector.shape_cast %b
+///    %flattened_d = vector.matrix_multiply %flattened_a, %flattened_b
+///    %d = vector.shape_cast %%flattened_d
+///    %e = add %c, %d
+/// ```
+/// `vector.matrix_multiply` later lowers to `llvm.matrix.multiply`.
+//
+/// This only kicks in when vectorContractLowering is set to Matmul and
+/// the vector.contract op is a row-major matrix multiply.
+class ContractionOpToMatmulOpLowering
+    : public vector::MaskableOpRewritePattern<vector::ContractionOp> {
+public:
+  using MaskableOpRewritePattern::MaskableOpRewritePattern;
+
+  ContractionOpToMatmulOpLowering(
+      vector::VectorContractLowering vectorContractLowering,
+      MLIRContext *context, PatternBenefit benefit = 100)
+      : MaskableOpRewritePattern<vector::ContractionOp>(context, benefit) {}
+
+  FailureOr<Value>
+  matchAndRewriteMaskableOp(vector::ContractionOp op, MaskingOpInterface maskOp,
+                            PatternRewriter &rewriter) const override;
+
+};
+
+/// Progressively lower a `vector.contract %a, %b, %c` with row-major matmul
+/// semantics to:
+/// ```
+///    %mta = maybe_transpose
+///    %mtb = maybe_transpose
+///    %flattened_a = vector.shape_cast %mta
+///    %flattened_b = vector.shape_cast %mtb
+///    %flattened_d = llvm.intr.matrix.multiply %flattened_a, %flattened_b
+///    %mtd = vector.shape_cast %flattened_d
+///    %d = maybe_untranspose %mtd
+///    %e = add %c, %d
+/// ```
+//
+/// This only kicks in when vectorContractLowering is set to `Matmul`.
+/// vector.transpose operations are inserted if the vector.contract op is not a
+/// row-major matrix multiply.
+///
+/// Scalable vectors are not supported.
+FailureOr<Value> ContractionOpToMatmulOpLowering::matchAndRewriteMaskableOp(
+    vector::ContractionOp op, MaskingOpInterface maskOp,
+    PatternRewriter &rew) const {
+  // TODO: Support vector.mask.
+  if (maskOp)
+    return failure();
+
+  auto iteratorTypes = op.getIteratorTypes().getValue();
+  if (!isParallelIterator(iteratorTypes[0]) ||
+      !isParallelIterator(iteratorTypes[1]) ||
+      !isReductionIterator(iteratorTypes[2]))
+    return failure();
+
+  Type opResType = op.getType();
+  VectorType vecType = dyn_cast<VectorType>(opResType);
+  if (vecType && vecType.isScalable()) {
+    // Note - this is sufficient to reject all cases with scalable vectors.
+    return failure();
+  }
+
+  Type elementType = op.getLhsType().getElementType();
+  if (!elementType.isIntOrFloat())
+    return failure();
+
+  Type dstElementType = vecType ? vecType.getElementType() : opResType;
+  if (elementType != dstElementType)
+    return failure();
+
+  // Perform lhs + rhs transpositions to conform to matmul row-major semantics.
+  // Bail out if the contraction cannot be put in this form.
+  MLIRContext *ctx = op.getContext();
+  Location loc = op.getLoc();
+  AffineExpr m, n, k;
+  bindDims(rew.getContext(), m, n, k);
+  // LHS must be A(m, k) or A(k, m).
+  Value lhs = op.getLhs();
+  auto lhsMap = op.getIndexingMapsArray()[0];
+  if (lhsMap == AffineMap::get(3, 0, {k, m}, ctx))
+    lhs = rew.create<vector::TransposeOp>(loc, lhs, ArrayRef<int64_t>{1, 0});
+  else if (lhsMap != AffineMap::get(3, 0, {m, k}, ctx))
+    return failure();
+
+  // RHS must be B(k, n) or B(n, k).
+  Value rhs = op.getRhs();
+  auto rhsMap = op.getIndexingMapsArray()[1];
+  if (rhsMap == AffineMap::get(3, 0, {n, k}, ctx))
+    rhs = rew.create<vector::TransposeOp>(loc, rhs, ArrayRef<int64_t>{1, 0});
+  else if (rhsMap != AffineMap::get(3, 0, {k, n}, ctx))
+    return failure();
+
+  // At this point lhs and rhs are in row-major.
+  VectorType lhsType = cast<VectorType>(lhs.getType());
+  VectorType rhsType = cast<VectorType>(rhs.getType());
+  int64_t lhsRows = lhsType.getDimSize(0);
+  int64_t lhsColumns = lhsType.getDimSize(1);
+  int64_t rhsColumns = rhsType.getDimSize(1);
+
+  Type flattenedLHSType =
+      VectorType::get(lhsType.getNumElements(), lhsType.getElementType());
+  lhs = rew.create<vector::ShapeCastOp>(loc, flattenedLHSType, lhs);
+
+  Type flattenedRHSType =
+      VectorType::get(rhsType.getNumElements(), rhsType.getElementType());
+  rhs = rew.create<vector::ShapeCastOp>(loc, flattenedRHSType, rhs);
+
+  Value mul = rew.create<LLVM::MatrixMultiplyOp>(
+      loc,
+      VectorType::get(lhsRows * rhsColumns,
+                      cast<VectorType>(lhs.getType()).getElementType()),
+      lhs, rhs, lhsRows, lhsColumns, rhsColumns);
+
+  mul = rew.create<vector::ShapeCastOp>(
+      loc,
+      VectorType::get({lhsRows, rhsColumns},
+                      getElementTypeOrSelf(op.getAcc().getType())),
+      mul);
+
+  // ACC must be C(m, n) or C(n, m).
+  auto accMap = op.getIndexingMapsArray()[2];
+  if (accMap == AffineMap::get(3, 0, {n, m}, ctx))
+    mul = rew.create<vector::TransposeOp>(loc, mul, ArrayRef<int64_t>{1, 0});
+  else if (accMap != AffineMap::get(3, 0, {m, n}, ctx))
+    llvm_unreachable("invalid contraction semantics");
+
+  Value res =
+      isa<IntegerType>(elementType)
+          ? static_cast<Value>(rew.create<arith::AddIOp>(loc, op.getAcc(), mul))
+          : static_cast<Value>(
+                rew.create<arith::AddFOp>(loc, op.getAcc(), mul));
+
+  return res;
+}
+
 } // namespace
 
 void mlir::vector::populateVectorRankReducingFMAPattern(
     RewritePatternSet &patterns) {
   patterns.add<VectorFMAOpNDRewritePattern>(patterns.getContext());
+}
+
+void mlir::vector::populateVectorContractToMatrixMultiply(
+    RewritePatternSet &patterns) {
+  patterns.add<ContractionOpToMatmulOpLowering>(patterns.getContext(), 100);
 }
 
 /// Populate the given list with patterns that convert from Vector to LLVM.

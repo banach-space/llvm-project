@@ -297,6 +297,10 @@ void populateVectorBitCastLoweringPatterns(RewritePatternSet &patterns,
 /// n > 1.
 void populateVectorRankReducingFMAPattern(RewritePatternSet &patterns);
 
+/// Populates a pattern that rank-reduces n-D FMAs into (n-1)-D FMAs where
+/// n > 1.
+void populateVectorContractToMatrixMultiply(RewritePatternSet &patterns);
+
 } // namespace vector
 } // namespace mlir
 #endif // MLIR_DIALECT_VECTOR_TRANSFORMS_LOWERINGPATTERNS_H
