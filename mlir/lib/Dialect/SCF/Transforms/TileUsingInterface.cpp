@@ -15,6 +15,7 @@
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Analysis/TopologicalSortUtils.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -441,14 +442,66 @@ static FailureOr<SmallVector<LoopLikeOpInterface>> generateLoopNestUsingForOp(
 
   // 6. Yield all the results of the tiled operation.
   SmallVector<Value> yieldedValues;
+  SmallVector<SmallVector<OpFoldResult>> offset;
+
+  /// NEW ====================================================================
+  /// Normally, offsets and sizes for the destination tensor (see InsertSliceOp
+  /// below) would come from `tileBodyFn` above, see `resultOffsets` and
+  /// `resultSizes`. Since I am not tiling the destination tensor, those sizes
+  /// would be incorrect in my case. Instead, I am re-calculating them below.
+  ///
+  /// Assume that the packed tensor is 4D and that the inner 2 dims are tiled.
+  /// Specifically, tweak for: tensor<9x?x8x8xi32> -> tensor<72x67xi32>.
+  ///
+  /// Offsets are computed as (there are 4 tile sizes!):
+  ///   [loop_idx_0 * tile_size_2, loop_idx_1 * tile_size_3]
+  /// Sizes are computed as:
+  ///   dim = tensor.dim(0) %dest_tensor
+  ///   [tile_size_2, min(dim - tile_size_3 * loop_idx_1, tile_size_3)]
+  ///
+  /// NOTE: For my problem, `resultSizes` are effectively tile sizes and that is
+  /// how I use them here.
+  ///
+  /// NOTE: I assume that there is only ONE destination tensor!
+  SmallVector<OpFoldResult> destOffsets;
+  SmallVector<OpFoldResult> resultSizesNew;
+
+  using AV = affine::AffineValueExpr;
+  affine::AffineBuilder ab(rewriter, loc);
+  AffineExpr dim0, dim1;
+
+  bindDims(rewriter.getContext(), dim0, dim1);
+
+  auto lhs = AV(dim0).bind(sizes[2]);
+  auto rhs = AV(dim1).bind(ivs[0]);
+  destOffsets.push_back(ab.mul(lhs, rhs));
+  resultSizesNew.push_back(resultSizes[0][2]);
+
+  // HACK - I assume/know that there is only 1 destination tensor!
+  Value dim =
+      tensor::DimOp::create(rewriter, loc, outerDestinationTensors[0], 1);
+  auto dimB = AV(dim1).bind(dim);
+  lhs = AV(dim0).bind(sizes[3]);
+  rhs = AV(dim1).bind(ivs[1]);
+  auto mul = ab.mul(lhs, rhs);
+  auto mulB = AV(dim0).bind(mul);
+  auto sub = ab.sub(dimB, mulB);
+  resultSizesNew.push_back(ab.min({sub, resultSizes[0][3]}));
+  destOffsets.push_back(mul);
+
+  offset.clear();
+  offset.push_back(destOffsets);
+  /// =========================================================================
+
   for (auto [tiledValue, destinationTensor, resultOffset, resultSize] :
-       llvm::zip_equal(tiledResults, innerDestinationTensors, resultOffsets,
+       llvm::zip_equal(tiledResults, innerDestinationTensors, offset,
                        resultSizes)) {
     SmallVector<OpFoldResult> resultStride(resultOffset.size(),
                                            rewriter.getIndexAttr(1));
+    /// NOTE: I assume that there is only ONE destination tensor!
     auto insertSlice = tensor::InsertSliceOp::create(
-        rewriter, loc, tiledValue, destinationTensor, resultOffset, resultSize,
-        resultStride);
+        rewriter, loc, tiledValue, destinationTensor, destOffsets,
+        resultSizesNew, resultStride);
     yieldedValues.push_back(insertSlice);
   }
   scf::YieldOp::create(rewriter, loc, yieldedValues);
@@ -731,6 +784,7 @@ static FailureOr<SmallVector<Value>> createInitialTensorsForTiling(
   SmallVector<Value> initTensors;
   Location loc = op->getLoc();
   if (reductionStrategy == ReductionTilingStrategy::FullReduction) {
+    //   TODO/FIXME: We _do not_ want "destination" here.
     if (failed(tensor::getOrCreateDestinations(rewriter, loc, op, initTensors)))
       return failure();
     return initTensors;

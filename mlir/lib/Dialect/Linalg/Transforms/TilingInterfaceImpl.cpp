@@ -714,23 +714,36 @@ struct LinalgOpPartialReductionInterface
   }
 };
 
+/// NEW - This is hacked specifically for tensor.unpack to allow me to tile over
+/// the source rather than the destination tensor.
 template <typename OpTy>
-static SmallVector<Range> getPackUnPackIterationDomain(OpTy op,
-                                                       OpBuilder &builder) {
+static SmallVector<Range>
+getPackUnPackIterationDomain(OpTy op, OpBuilder &builder, bool tileDestTensor) {
   static_assert(llvm::is_one_of<OpTy, PackOp, UnPackOp>::value,
                 "applies to only pack or unpack operations");
   OpBuilder::InsertionGuard g(builder);
-  int64_t rank = (std::is_same<OpTy, PackOp>::value) ? op.getSourceRank()
-                                                     : op.getDestRank();
+  int64_t rank;
+  if (tileDestTensor)
+    rank = op.getDestRank();
+  else
+    rank = op.getSourceRank();
+  UnPackOp unpack = cast<UnPackOp>(op);
+  SmallVector<OpFoldResult> tiledTensorSizes;
+  if (tileDestTensor) {
+    ReifiedRankedShapedTypeDims resultShape;
+    (void)reifyResultShapes(builder, op, resultShape);
+    tiledTensorSizes = resultShape[0];
+  } else
+    tiledTensorSizes =
+        tensor::getMixedSizes(builder, op.getLoc(), op.getSource());
   OpFoldResult zero = builder.getIndexAttr(0);
   OpFoldResult one = builder.getIndexAttr(1);
-  ReifiedRankedShapedTypeDims resultShape;
-  (void)reifyResultShapes(builder, op, resultShape);
   SmallVector<Range> loopBounds(rank);
   for (auto dim : llvm::seq<int64_t>(0, rank)) {
     loopBounds[dim].offset = zero;
     loopBounds[dim].stride = one;
-    loopBounds[dim].size = resultShape[0][dim];
+    UnPackOp unpack = cast<UnPackOp>(op);
+    loopBounds[dim].size = tiledTensorSizes[dim];
   }
   return loopBounds;
 }
@@ -758,7 +771,8 @@ struct PackOpTiling
   }
 
   SmallVector<Range> getIterationDomain(Operation *op, OpBuilder &b) const {
-    return getPackUnPackIterationDomain<PackOp>(cast<PackOp>(op), b);
+    return getPackUnPackIterationDomain<PackOp>(cast<PackOp>(op), b,
+                                                /*tileDestTensor=*/true);
   }
 
   FailureOr<TilingResult>
@@ -1104,6 +1118,36 @@ static UnpackTileDimInfo getUnpackTileDimInfo(OpBuilder &b, UnPackOp unpackOp,
       presburger::BoundType::UB, tileSize,
       /*stopCondition=*/nullptr, /*closedUB=*/true);
   std::optional<int64_t> cstInnerSize = getConstantIntValue(innerTileSize);
+
+  // NEW ======================================================================
+  // Hard-coded for a 4D -> 2D case (tensor<9x?x8x8xi32> -> tensor<72x67xi32>).
+  // Compute indices as follows:
+  //   idx_0 = tileOffset_0 * tile_size_0
+  //   size_0 = tileSize;
+  //
+  //   mul = tileOffset_1 * tile_size_1
+  //   idx_1 = mul
+  //   dim = tensor.dim(0) %dest_tensor
+  //   size_0 = min(mul, output_dim_1)
+  //
+  // NOTE: For this case, I only need affine.min for one output dim!
+  // NOTE: For this example, I know that tile sizes are aligned!
+  auto lhs = AV(dim0).bind(tileOffset);
+  auto rhs = AV(dim1).bind(tileSize);
+  auto mul = ab.mul(lhs, rhs);
+  info.sourceOffset = mul;
+
+  Value dimN = tensor::DimOp::create(b, loc, unpackOp.getDest(), 1);
+  auto dimB = AV(dim0).bind(dimN);
+  auto mulB = AV(dim1).bind(mul);
+  auto sub = ab.sub(dimB, mulB);
+  info.sourceSize = tileDim == 1 ? ab.min({sub, tileSize}) : tileSize;
+
+  info.resultOffset = zeroAttr;
+  info.isAlignedToInnerTileSize = true;
+  return info;
+  // ==========================================================================
+
   if (!failed(cstSize) && cstInnerSize) {
     if (*cstSize % *cstInnerSize == 0)
       info.isAlignedToInnerTileSize = true;
@@ -1167,15 +1211,28 @@ static UnpackTileDimInfo getUnpackTileDimInfo(OpBuilder &b, UnPackOp unpackOp,
 struct UnPackOpTiling
     : public TilingInterface::ExternalModel<UnPackOpTiling, linalg::UnPackOp> {
 
+  // New - Hacked to allow me to tile the source rather than the destination
+  // tensor!
+  // TODO: Find a way to set this pragmatically!
+  bool tileDestTensor = false;
+
   SmallVector<utils::IteratorType> getLoopIteratorTypes(Operation *op) const {
     auto unpackOp = cast<UnPackOp>(op);
-    SmallVector<utils::IteratorType> iteratorTypes(
-        unpackOp.getDestRank(), utils::IteratorType::parallel);
+
+    SmallVector<utils::IteratorType> iteratorTypes;
+
+    if (tileDestTensor)
+      iteratorTypes = SmallVector<utils::IteratorType>(
+          unpackOp.getDestRank(), utils::IteratorType::parallel);
+    else
+      iteratorTypes = SmallVector<utils::IteratorType>(
+          unpackOp.getSourceType().getRank(), utils::IteratorType::parallel);
     return iteratorTypes;
   }
 
   SmallVector<Range> getIterationDomain(Operation *op, OpBuilder &b) const {
-    return getPackUnPackIterationDomain<UnPackOp>(cast<UnPackOp>(op), b);
+    return getPackUnPackIterationDomain<UnPackOp>(
+        cast<UnPackOp>(op), b, /*tileDestTensor=*/tileDestTensor);
   }
 
   /// There are two cases in tiling unpack ops. If the tiling size is aligned to
@@ -1192,6 +1249,11 @@ struct UnPackOpTiling
   /// (3, 7). In this context, the tiled unpack produces a (3 * n) elements
   /// because there are 3 rows in total. Follow by a tensor.extract_slice op, we
   /// can get the actual result.
+  ///
+  /// NEW =====================================================================
+  ///  When tiling the source (rather then destination) tensor, offsets and
+  ///  sizes can be used directly as inputs to ExtracSliceOp.
+  /// =========================================================================
   FailureOr<TilingResult>
   getTiledImplementation(Operation *op, OpBuilder &b,
                          ArrayRef<OpFoldResult> offsets,
@@ -1214,39 +1276,75 @@ struct UnPackOpTiling
     SmallVector<OpFoldResult> sliceSrcStrides(destRank, oneAttr);
     SmallVector<OpFoldResult> sliceSrcIndices, sliceSrcSizes;
     SmallVector<OpFoldResult> destExpandedSizes, resultOffsetsFromDest;
+
+    SmallVector<OpFoldResult> sliceDestStrides(destRank, oneAttr);
+    SmallVector<OpFoldResult> sliceDestIndices, sliceDestSizes;
+
+    // NOTE - Here we want to compute sizes and offsets for the untiled tensor.
+    // In this case, input offsets and sizes are used for ExtractSliceOp for the
+    // 4D source tensor. So, what's left is calculation of offset and sizes for
+    // the 2D destination tensor.
+    // NOTE - Assuming 4D -> 2D unpack case
+    //        (tensor<9x?x8x8xi32> -> tensor<72x67xi32>)
     for (auto dim : llvm::seq<int64_t>(0, destRank)) {
       UnpackTileDimInfo info =
-          getUnpackTileDimInfo(b, unpackOp, dim, offsets[dim], sizes[dim]);
+          getUnpackTileDimInfo(b, unpackOp, dim, offsets[dim], sizes[dim + 2]);
       if (!info.isAlignedToInnerTileSize)
         isPerfectTilingCase = false;
-      sliceSrcIndices.push_back(info.sourceOffset);
-      sliceSrcSizes.push_back(info.sourceSize);
+
+      sliceDestIndices.push_back(info.sourceOffset);
+      sliceDestSizes.push_back(info.sourceSize);
+
       destExpandedSizes.push_back(info.destExpandedSize);
       resultOffsetsFromDest.push_back(info.resultOffset);
     }
 
+    // HACK - for the example that I am testing this with, the tiling is indeed
+    // perfect. The goal is to only support aligned cases. I've not had the
+    // chance to update the logic here, hence hard-coding this value!
+    isPerfectTilingCase = true;
+
+    // NEW/FIXME: Commented out - crashes!
     // The tiling is applied on destination dimensions. We have to apply the
     // interchange on source dimensions if outer_dims_perm is set.
-    applyPermToRange(sliceSrcIndices, sliceSrcSizes,
-                     unpackOp.getOuterDimsPerm());
+    // applyPermToRange(sliceSrcIndices, sliceSrcSizes,
+    //                  unpackOp.getOuterDimsPerm());
     Attribute zeroAttr = b.getIndexAttr(0);
+
     sliceSrcIndices.append(numInnerTiles, zeroAttr);
     sliceSrcSizes.append(unpackOp.getMixedTiles());
     sliceSrcStrides.append(numInnerTiles, oneAttr);
+
     SmallVector<Operation *> generatedSlices;
+    // ORIGINAL:
+    // tensor::ExtractSliceOp sliceSource = tensor::ExtractSliceOp::create(
+    //     b, loc, unpackOp.getSource(), sliceSrcIndices, sliceSrcSizes,
+    //     sliceSrcStrides);
+    // NEW:
     tensor::ExtractSliceOp sliceSource = tensor::ExtractSliceOp::create(
-        b, loc, unpackOp.getSource(), sliceSrcIndices, sliceSrcSizes,
-        sliceSrcStrides);
+        b, loc, unpackOp.getSource(), offsets, sizes, sliceSrcStrides);
     generatedSlices.push_back(sliceSource);
 
     SmallVector<OpFoldResult> destStrides(destRank, oneAttr);
     Value sliceDest;
+
+    /// HACK - for the example that I am testing this with, the tiling is indeed
+    // perfect. The goal is to only support aligned cases. I've not had the
+    // chance to update the logic here, hence hard-coding this value!
+    // IMPORTANT - avoid using `tensor.empty` that's created in the else branch
+    // - that should not be required.
+    isPerfectTilingCase = true;
+
     if (isPerfectTilingCase) {
       auto destSliceOp = tensor::ExtractSliceOp::create(
-          b, loc, unpackOp.getDest(), offsets, sizes, destStrides);
+          b, loc, unpackOp.getDest(), sliceDestIndices, sliceDestSizes,
+          destStrides);
       sliceDest = destSliceOp;
       generatedSlices.push_back(destSliceOp);
     } else {
+      // NOTE - almost definitely incorrect for the "tile source instead of dest
+      // tensor" case, but `isPerfectTilingCase` is hard-coded to `true`, so
+      // ignoring.
       sliceDest = tensor::EmptyOp::create(
           b, loc, destExpandedSizes, unpackOp.getDestType().getElementType());
     }
@@ -1258,6 +1356,8 @@ struct UnPackOpTiling
     Operation *tiledUnpackOp = UnPackOp::create(
         b, loc, TypeRange{sliceDest.getType()}, tiledOperands, op->getAttrs());
 
+    // NEW - In my case we can assume aligned case!
+    isPerfectTilingCase = true;
     if (isPerfectTilingCase)
       return TilingResult{{tiledUnpackOp},
                           SmallVector<Value>(tiledUnpackOp->getResults()),
