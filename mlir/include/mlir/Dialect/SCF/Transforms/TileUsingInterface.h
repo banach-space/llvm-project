@@ -41,6 +41,8 @@ struct SCFTilingOptions {
     return *this;
   }
 
+  bool useOriginalTileSize = false;
+
   /// Computation function that returns the tile sizes to use for each loop.
   /// Returning a tile size of zero implies no tiling for that loop. If the
   /// size of the returned vector is smaller than the number of loops, the inner

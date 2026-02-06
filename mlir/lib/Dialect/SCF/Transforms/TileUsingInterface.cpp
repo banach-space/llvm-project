@@ -276,7 +276,8 @@ static bool canOmitTileOffsetInBoundsCheck(OpFoldResult givenTileSize,
 static std::tuple<SmallVector<OpFoldResult>, SmallVector<OpFoldResult>>
 getTileOffsetAndSizes(RewriterBase &rewriter, Location loc, ValueRange ivs,
                       ArrayRef<Range> iterationDomain,
-                      ArrayRef<OpFoldResult> givenTileSizes) {
+                      ArrayRef<OpFoldResult> givenTileSizes,
+                      bool useOriginalTile = false) {
   SmallVector<OpFoldResult> offsets, sizes;
   int materializedLoopNum = 0;
   for (auto [givenTileSize, loopRange] :
@@ -293,6 +294,17 @@ getTileOffsetAndSizes(RewriterBase &rewriter, Location loc, ValueRange ivs,
     Value iv = ivs[materializedLoopNum++];
     OpFoldResult offset = getAsOpFoldResult(iv);
     offsets.push_back(offset);
+    // In the case of Ops like linalg.unpack, tiling tile sizes will match
+    // inner tile sizes - anything other than that wouldn't make sense! Rather
+    // than computing bounds, just use the tile size. Otherwise, we would
+    // end-up with something like this:
+    //    %tileSize = "affine.min"(%arg5, %8) <{map = affine_map<(d0)[s0] ->
+    //    (-d0 + 4093, s0)>}> : (index, index) -> index
+    //  for which UB is 4093, which obviously is not correct!
+    if (useOriginalTile) {
+      sizes.push_back(givenTileSize);
+      continue;
+    }
     OpFoldResult size =
         getBoundedTileSize(rewriter, loc, loopRange, offset, givenTileSize);
     sizes.push_back(size);
@@ -388,7 +400,7 @@ static Operation *cloneOpAndUpdateDestinationArgs(RewriterBase &rewriter,
 static FailureOr<SmallVector<LoopLikeOpInterface>> generateLoopNestUsingForOp(
     RewriterBase &rewriter, Location loc, ArrayRef<Range> loopRanges,
     ArrayRef<OpFoldResult> givenTileSizes, ValueRange outerDestinationTensors,
-    GenerateTiledBodyFn tiledBodyFn) {
+    GenerateTiledBodyFn tiledBodyFn, bool useOriginalTile = false) {
   assert(!loopRanges.empty() && "unexpected empty loop ranges");
   assert(loopRanges.size() == givenTileSizes.size() &&
          "expected as many tile sizes as loop ranges");
@@ -422,8 +434,8 @@ static FailureOr<SmallVector<LoopLikeOpInterface>> generateLoopNestUsingForOp(
 
   // Compute the `offsets` and `sizes` to use for tiling.
   SmallVector<OpFoldResult> offsets, sizes;
-  std::tie(offsets, sizes) =
-      getTileOffsetAndSizes(rewriter, loc, ivs, loopRanges, givenTileSizes);
+  std::tie(offsets, sizes) = getTileOffsetAndSizes(
+      rewriter, loc, ivs, loopRanges, givenTileSizes, useOriginalTile);
 
   SmallVector<Value> tiledResults;
   SmallVector<SmallVector<OpFoldResult>> resultOffsets, resultSizes;
@@ -688,7 +700,7 @@ static FailureOr<SmallVector<LoopLikeOpInterface>> generateLoopNest(
     RewriterBase &rewriter, Location loc, const scf::SCFTilingOptions &options,
     ArrayRef<Range> loopRanges, ArrayRef<OpFoldResult> givenTileSizes,
     ArrayRef<OpFoldResult> numThreads, ValueRange destinationTensors,
-    GenerateTiledBodyFn tiledBodyFn) {
+    GenerateTiledBodyFn tiledBodyFn, bool useOriginalTileSize = false) {
   // If the tile sizes are all zero, no loops are generated. Just call the
   // callback function to handle untiled case.
   if (llvm::all_of(givenTileSizes, isZeroInteger)) {
@@ -707,7 +719,8 @@ static FailureOr<SmallVector<LoopLikeOpInterface>> generateLoopNest(
   }
   if (options.loopType == scf::SCFTilingOptions::LoopType::ForOp) {
     return generateLoopNestUsingForOp(rewriter, loc, loopRanges, givenTileSizes,
-                                      destinationTensors, tiledBodyFn);
+                                      destinationTensors, tiledBodyFn,
+                                      useOriginalTileSize);
   }
   if (options.loopType == scf::SCFTilingOptions::LoopType::ForallOp) {
     return generateLoopNestUsingForallOp(
@@ -1238,9 +1251,10 @@ mlir::scf::tileUsingSCF(RewriterBase &rewriter, TilingInterface op,
   // 7. Generate the tiled loops nest using the callback defined above.
   SmallVector<LoopLikeOpInterface> loops;
   {
-    FailureOr<SmallVector<LoopLikeOpInterface>> loopsOr = generateLoopNest(
-        rewriter, op.getLoc(), options, iterationDomain, givenTileSizes,
-        numThreads, initTensors, innerYieldTiledValuesFn);
+    FailureOr<SmallVector<LoopLikeOpInterface>> loopsOr =
+        generateLoopNest(rewriter, op.getLoc(), options, iterationDomain,
+                         givenTileSizes, numThreads, initTensors,
+                         innerYieldTiledValuesFn, options.useOriginalTileSize);
     if (failed(loopsOr))
       return op.emitOpError("failed to generate tiling loops");
     assert(succeeded(tilingResult) &&

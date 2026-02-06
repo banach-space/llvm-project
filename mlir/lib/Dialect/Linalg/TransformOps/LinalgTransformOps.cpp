@@ -3598,6 +3598,8 @@ transform::TileUsingForOp::apply(transform::TransformRewriter &rewriter,
     }
 
     scf::SCFTilingOptions tilingOptions;
+    // HACK!!!!!
+    tilingOptions.useOriginalTileSize = true;
     if (tileSizes.empty()) {
       tilingOptions.setTileSizeComputationFunction(
           [](OpBuilder &, Operation *) -> SmallVector<OpFoldResult> {

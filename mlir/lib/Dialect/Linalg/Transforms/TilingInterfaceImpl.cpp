@@ -20,6 +20,7 @@
 #include "mlir/Dialect/Utils/IndexingUtils.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/Dialect/Utils/StructuredOpsUtils.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/Interfaces/TilingInterface.h"
 #include "mlir/Interfaces/ValueBoundsOpInterface.h"
@@ -1068,13 +1069,42 @@ struct UnpackTileDimInfo {
   OpFoldResult destExpandedSize;
 };
 
+static bool isVectorVScale(Value v) {
+  return v.getDefiningOp<vector::VectorScaleOp>() != nullptr; // vector.vscale
+}
+
+// Returns true iff `ofr` is a value defined by `arith.muli` where one operand
+// is (possibly casted) `vector.vscale`. If `otherOperand` is non-null, it is
+// set to the non-vscale operand.
+static bool isMulWithVScale(OpFoldResult ofr, Value *otherOperand = nullptr) {
+  auto v = dyn_cast<Value>(ofr);
+  if (!v)
+    return false; // it's an Attribute, not an op result
+
+  auto mul = v.getDefiningOp<arith::MulIOp>(); // arith.muli
+  if (!mul)
+    return false;
+
+  Value lhs = mul.getLhs();
+  Value rhs = mul.getRhs();
+
+  const bool lhsIs = isVectorVScale(lhs);
+  const bool rhsIs = isVectorVScale(rhs);
+  if (!lhsIs && !rhsIs)
+    return false;
+
+  if (otherOperand)
+    *otherOperand = lhsIs ? rhs : lhs;
+  return true;
+}
+
 /// Returns the needed information for tiling unpack op on `tileDim` with given
-/// `tileOffset` and `tileSize`. For more details, see the comment of the
+/// `tileOffset` and `tilingTileSize`. For more details, see the comment of the
 /// `getTiledImplementation`.
 static UnpackTileDimInfo getUnpackTileDimInfo(OpBuilder &b, UnPackOp unpackOp,
                                               int64_t tileDim,
                                               OpFoldResult tileOffset,
-                                              OpFoldResult tileSize) {
+                                              OpFoldResult tilingTileSize) {
   UnpackTileDimInfo info;
   Attribute zeroAttr = b.getIndexAttr(0);
   Attribute oneAttr = b.getIndexAttr(1);
@@ -1084,9 +1114,9 @@ static UnpackTileDimInfo getUnpackTileDimInfo(OpBuilder &b, UnPackOp unpackOp,
   if (!dimAndTileMapping.count(tileDim)) {
     info.isAlignedToInnerTileSize = true;
     info.sourceOffset = tileOffset;
-    info.sourceSize = tileSize;
+    info.sourceSize = tilingTileSize;
     info.resultOffset = zeroAttr;
-    info.destExpandedSize = tileSize;
+    info.destExpandedSize = tilingTileSize;
     return info;
   }
 
@@ -1100,23 +1130,29 @@ static UnpackTileDimInfo getUnpackTileDimInfo(OpBuilder &b, UnPackOp unpackOp,
   OpFoldResult innerTileSize = dimAndTileMapping[tileDim];
 
   info.isAlignedToInnerTileSize = false;
-  FailureOr<int64_t> cstSize = ValueBoundsConstraintSet::computeConstantBound(
-      presburger::BoundType::UB, tileSize,
-      /*stopCondition=*/nullptr, /*closedUB=*/true);
-  std::optional<int64_t> cstInnerSize = getConstantIntValue(innerTileSize);
-  if (!failed(cstSize) && cstInnerSize) {
-    if (*cstSize % *cstInnerSize == 0)
+  FailureOr<int64_t> tilingTileSizeCstUB =
+      ValueBoundsConstraintSet::computeConstantBound(
+          presburger::BoundType::UB, tilingTileSize,
+          /*stopCondition=*/nullptr, /*closedUB=*/true);
+  std::optional<int64_t> cstInnerTileSize = getConstantIntValue(innerTileSize);
+
+  // HACK: If dealing with vector.vscale * tile_size
+  info.isAlignedToInnerTileSize =
+      isMulWithVScale(tilingTileSize) == isMulWithVScale(innerTileSize);
+  if (info.isAlignedToInnerTileSize ||
+      (!failed(tilingTileSizeCstUB) && cstInnerTileSize)) {
+    if (*tilingTileSizeCstUB % *cstInnerTileSize == 0)
       info.isAlignedToInnerTileSize = true;
 
     // If the tiling size equals to the inner tiling size, the outer dims are
     // always 1.
-    if (*cstInnerSize == *cstSize) {
+    if (*cstInnerTileSize == *tilingTileSizeCstUB) {
       auto lhs = AV(dim0).bind(tileOffset);
       auto rhs = AV(dim1).bind(innerTileSize);
       info.sourceOffset = ab.floor(lhs, rhs);
       info.sourceSize = oneAttr;
       info.resultOffset = zeroAttr;
-      info.destExpandedSize = tileSize;
+      info.destExpandedSize = tilingTileSize;
       return info;
     }
   }
@@ -1125,7 +1161,7 @@ static UnpackTileDimInfo getUnpackTileDimInfo(OpBuilder &b, UnPackOp unpackOp,
     info.sourceOffset =
         ab.floor(AV(dim0).bind(tileOffset), AV(dim1).bind(innerTileSize));
     info.resultOffset = zeroAttr;
-    info.destExpandedSize = tileSize;
+    info.destExpandedSize = tilingTileSize;
 
     // The ceilDiv is needed here because there could be incomplete tile even
     // it is perfect tiling cases. E.g.,
@@ -1134,7 +1170,7 @@ static UnpackTileDimInfo getUnpackTileDimInfo(OpBuilder &b, UnPackOp unpackOp,
     // size=32; one of them have size=2. The size is represented using
     // affine_min op; we need ceilDiv.
     info.sourceSize =
-        ab.ceil(AV(dim0).bind(tileSize), AV(dim1).bind(innerTileSize));
+        ab.ceil(AV(dim0).bind(tilingTileSize), AV(dim1).bind(innerTileSize));
     return info;
   }
 
@@ -1142,7 +1178,7 @@ static UnpackTileDimInfo getUnpackTileDimInfo(OpBuilder &b, UnPackOp unpackOp,
       b, loc, getValueOrCreateConstantIndexOp(b, loc, tileOffset),
       getValueOrCreateConstantIndexOp(b, loc, innerTileSize));
   OpFoldResult tileExclusiveBound =
-      ab.add(AV(dim0).bind(tileOffset), AV(dim1).bind(tileSize));
+      ab.add(AV(dim0).bind(tileOffset), AV(dim1).bind(tilingTileSize));
   affine::DivModValue lastCoord = affine::getDivMod(
       b, loc,
       getValueOrCreateConstantIndexOp(
