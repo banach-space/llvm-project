@@ -1140,6 +1140,25 @@ static LogicalResult verifyOutputShape(
   return success();
 }
 
+// Find a pure reduction dims, i.e. a reduction dim that is only
+// present in only one of the inputs.
+std::optional<int64_t> getPureReductionDim(vector::ContractionOp *contract) {
+  auto maps = contract->getIndexingMapsArray();
+  AffineMap lhsMap = maps[0];
+  AffineMap rhsMap = maps[1];
+
+  for (auto [dim, attr] : llvm::enumerate(contract->getIteratorTypes())) {
+    auto iteratorType = cast<vector::IteratorTypeAttr>(attr).getValue();
+    if (iteratorType != vector::IteratorType::reduction)
+      continue;
+
+    if (!lhsMap.isFunctionOfDim(dim) || !rhsMap.isFunctionOfDim(dim))
+      return dim;
+  }
+
+  return std::nullopt;
+}
+
 LogicalResult ContractionOp::verify() {
   VectorType lhsType = getLhsType();
   VectorType rhsType = getRhsType();
@@ -1179,6 +1198,13 @@ LogicalResult ContractionOp::verify() {
       return emitOpError("expected indexing map ")
              << index << " to be a projected permutation of its inputs";
   }
+
+  // TODO: Unify this with linalg.contract
+  auto pureReduceDim = getPureReductionDim(this);
+  if (pureReduceDim.has_value())
+    return emitOpError("iteration space dim at index ")
+           << pureReduceDim.value()
+           << " is neither a contracting dim nor of parallel iteration type";
 
   auto contractingDimMap = getContractingDimMap();
   auto batchDimMap = getBatchDimMap();
