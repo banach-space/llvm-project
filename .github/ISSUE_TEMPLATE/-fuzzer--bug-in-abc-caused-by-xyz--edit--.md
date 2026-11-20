@@ -31,6 +31,10 @@ assignees: ''
 > FILL-ME: Describe what happened instead. Include relevant output,
 > diagnostics or assertion messages. For crashes, include a stack dump.
 
+## Your commitment regarding this effort
+
+> FILL-ME: Are you planning to fix this issue? Are you planning to submit more issues like this?
+
 ## AI Declaration
 
 > FILL-ME: Did you use AI when preparing this report?
