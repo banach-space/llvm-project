@@ -1,13 +1,13 @@
 ---
-name: "[Fuzzer-Generated] Bug report"
+name: "[Fuzzer] Bug in ABC caused by XYZ (edit!)"
 about: Create a report about a bug found with a fuzzer
-title: "[Fuzzer-Generated] Bug report for LLVM"
+title: "[Fuzzer] Bug report based on a fuzzer-generated example"
 labels: ''
 assignees: ''
 
 ---
 
-> > Replace each FILL-ME with your response. You do not need to identify
+> Replace each FILL-ME comment with your response. You do not need to identify
 > the cause or propose a fix to report a bug.
 
 ## LLVM version and environment
