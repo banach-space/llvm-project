@@ -7,29 +7,45 @@ assignees: ''
 
 ---
 
-> Please provide your description under FILL-ME 
+> > Replace each FILL-ME with your response. You do not need to identify
+> the cause or propose a fix to report a bug.
 
-## LLVM Git hash + data
+## LLVM version and environment
 
-> FILL-ME
+> FILL-ME: Provide the LLVM release version or Git commit hash.
+> Include relevant platform, target and build details
+> (e.g. whether assertions are enabled).
 
 ## Reproducer
 
-> FILL-ME: Provide full, self-contained input together with the invocation command to trigger the bug.
+> FILL-ME: Provide full, self-contained input and the exact command
+> needed to reproduce the problem. Reduce the input where possible.
+> Please confirm that you have run this reproducer yourself.
 
-## Expected behaviour or stack dump
+## Expected behaviour
 
-> FILL-ME: If the generated output was incorrect, explain what was expected. For compiler crashes, include stack dump.
+> FILL-ME: Explain what you expected to happen.
 
-## LLM Declaration
+## Actual behaviour
 
-> FILL-ME: Did you use AI to create this report? If yes, to what extent?
+> FILL-ME: Describe what happened instead. Include relevant output,
+> diagnostics or assertion messages. For crashes, include a stack dump.
 
-## LLM-Suggested Cause and Fix
+## AI Declaration
 
-> FILL-ME: Optional
+> FILL-ME: Did you use AI when preparing this report?
+> If yes, briefly explain how (e.g. generating the input, investigating
+> the cause, suggesting a fix or editing the description) and what
+> you checked yourself.
+
+## Analysis and possible fix
 
 <details>
 <summary> Click to expand ... </summary>
+
+> FILL-ME: Describe any investigation you have done, with relevant code
+> references where possible. Distinguish verified observations from
+> hypotheses. If you include AI-assisted analysis, explain what you
+> checked and why you think the explanation is plausible.
 
 </details>
